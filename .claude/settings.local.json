@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(node \"C:\\\\Users\\\\ryanw\\\\Projects\\\\offline-listening\\\\frontend\\\\scripts\\\\generate-icons.cjs\")",
+      "PowerShell(\"---\")",
+      "mcp__Claude_Preview__preview_start",
+      "PowerShell(Get-NetTCPConnection -LocalPort 3001 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { $p = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue; \"PID $\\($_.OwningProcess\\)  $\\($p.ProcessName\\)  $\\($p.Path\\)\" })",
+      "PowerShell(\\(Invoke-RestMethod http://localhost:4200/health | ConvertTo-Json -Compress\\))"
+    ]
+  }
+}

@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dev-dist/
+.env
+.env.local
+*.log
+*.mp3
+*.part.mp3
+.DS_Store
