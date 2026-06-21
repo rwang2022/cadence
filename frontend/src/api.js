@@ -1,18 +1,24 @@
-// Backend base URL. Set VITE_API_BASE in .env / deploy env to your Railway/Render URL.
+// Backend base URL. Set VITE_API_BASE in .env / deploy env to your backend URL.
 // Empty string = same origin (useful when proxying in dev).
 export const API_BASE = (import.meta.env.VITE_API_BASE || '').replace(/\/$/, '');
 
 export const streamUrl = (id) => `${API_BASE}/stream/${id}`;
 
+// Skips ngrok's free-tier browser interstitial; harmless on any other host.
+export const API_HEADERS = { 'ngrok-skip-browser-warning': 'true' };
+
 export async function search(query, signal) {
-  const res = await fetch(`${API_BASE}/search?q=${encodeURIComponent(query)}`, { signal });
+  const res = await fetch(`${API_BASE}/search?q=${encodeURIComponent(query)}`, {
+    signal,
+    headers: API_HEADERS,
+  });
   if (!res.ok) throw new Error(`Search failed (${res.status})`);
   const data = await res.json();
   return data.results || [];
 }
 
 export async function info(id, signal) {
-  const res = await fetch(`${API_BASE}/info/${id}`, { signal });
+  const res = await fetch(`${API_BASE}/info/${id}`, { signal, headers: API_HEADERS });
   if (!res.ok) throw new Error(`Info failed (${res.status})`);
   return res.json();
 }

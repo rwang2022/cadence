@@ -25,7 +25,9 @@ const CACHE_DIR = process.env.CACHE_DIR || path.join(os.tmpdir(), 'cadence-audio
 fs.mkdirSync(CACHE_DIR, { recursive: true });
 
 const app = express();
-app.use(cors()); // CORS enabled for the PWA frontend
+// CORS enabled for the PWA frontend. Expose range headers so cross-origin audio
+// seeking works (the frontend reads them via the service worker).
+app.use(cors({ exposedHeaders: ['Content-Range', 'Accept-Ranges', 'Content-Length', 'Content-Type'] }));
 app.disable('x-powered-by');
 
 // ---------------------------------------------------------------------------

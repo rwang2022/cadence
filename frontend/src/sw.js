@@ -31,13 +31,19 @@ self.addEventListener('fetch', (event) => {
 
 async function handleAudio(request) {
   const cache = await caches.open(AUDIO_CACHE);
-  // Cached responses are stored as full 200s (via cache.add); match by URL.
+  // Cached responses are stored as full 200s; match by URL.
   const cached = await cache.match(request, { ignoreVary: true });
   if (cached) return buildRangeResponse(request, cached);
 
-  // Not downloaded: go to the network (online streaming).
+  // Not downloaded: stream from the network. Re-issue the request with the
+  // ngrok-skip header (the <audio> element can't set it itself) while
+  // preserving the Range header so seeking still works online.
+  const headers = new Headers();
+  const range = request.headers.get('range');
+  if (range) headers.set('Range', range);
+  headers.set('ngrok-skip-browser-warning', 'true');
   try {
-    return await fetch(request);
+    return await fetch(request.url, { method: 'GET', headers, redirect: 'follow' });
   } catch (e) {
     return new Response('Offline and not downloaded', { status: 504 });
   }

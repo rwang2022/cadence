@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { streamUrl } from '../api.js';
+import { streamUrl, API_HEADERS } from '../api.js';
 import {
   loadLibrary,
   saveLibrary,
@@ -203,8 +203,11 @@ export function PlayerProvider({ children }) {
     setDownloading((d) => ({ ...d, [track.id]: true }));
     try {
       const cache = await caches.open(AUDIO_CACHE);
-      // cache.add fetches the full file (200) and stores it for offline use.
-      await cache.add(streamUrl(track.id));
+      // Fetch the full file (200) with the ngrok-skip header, then cache it for
+      // offline use. (cache.add can't set headers, so we do it manually.)
+      const res = await fetch(streamUrl(track.id), { headers: API_HEADERS });
+      if (!res.ok) throw new Error(`Download failed (${res.status})`);
+      await cache.put(streamUrl(track.id), res);
       setLibrary((lib) => (lib.find((t) => t.id === track.id) ? lib : [{ ...track, downloadedAt: Date.now() }, ...lib]));
     } catch (e) {
       console.error('download failed', e);
