@@ -10,7 +10,7 @@ import {
  *   'library' -> remove download
  *   'queue'   -> handled separately in Queue page
  */
-export default function SongRow({ track, list, actions = 'search', trailing }) {
+export default function SongRow({ track, actions = 'search', trailing }) {
   const {
     current, isPlaying, playTrack, preload,
     addToQueue, queue, download, downloading, isDownloaded, removeDownload,
@@ -27,7 +27,7 @@ export default function SongRow({ track, list, actions = 'search', trailing }) {
         active ? 'bg-surface2' : ''
       }`}
       onPointerDown={() => preload(track)} // preload audio on tap to avoid lag
-      onClick={() => playTrack(track, list)}
+      onClick={() => playTrack(track)}
       role="button"
     >
       <div className="relative shrink-0">

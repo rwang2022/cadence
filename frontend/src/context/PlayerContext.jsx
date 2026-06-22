@@ -110,13 +110,10 @@ export function PlayerProvider({ children }) {
     updateMediaSession(track);
   }, [audio]);
 
-  // Play a track and (optionally) replace the queue with its surrounding list.
-  const playTrack = useCallback((track, list) => {
-    if (Array.isArray(list)) {
-      setQueue(list);
-    } else if (!queueRef.current.find((t) => t.id === track.id)) {
-      setQueue((q) => [...q, track]);
-    }
+  // Play a track immediately. Does NOT touch the queue — the queue is only what
+  // the user explicitly adds with the + button. (playNext/playPrev still walk
+  // the queue; if the current song isn't in it, "next" starts at the top.)
+  const playTrack = useCallback((track) => {
     load(track, true);
   }, [load]);
 

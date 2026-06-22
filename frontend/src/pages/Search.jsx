@@ -70,7 +70,7 @@ export default function Search() {
           </div>
         )}
         {results.map((t) => (
-          <SongRow key={t.id} track={t} list={results} actions="search" />
+          <SongRow key={t.id} track={t} actions="search" />
         ))}
       </div>
     </div>

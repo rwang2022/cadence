@@ -22,7 +22,7 @@ export default function Library() {
           </div>
         ) : (
           library.map((t) => (
-            <SongRow key={t.id} track={t} list={library} actions="library" />
+            <SongRow key={t.id} track={t} actions="library" />
           ))
         )}
       </div>
