@@ -11,6 +11,10 @@ import {
 const PlayerCtx = createContext(null);
 export const usePlayer = () => useContext(PlayerCtx);
 
+// How many songs to download at once. The free ngrok tunnel + on-demand
+// yt-dlp/ffmpeg conversion can't handle a big parallel burst, so we cap it.
+const MAX_CONCURRENT_DOWNLOADS = 2;
+
 export function PlayerProvider({ children }) {
   const audioRef = useRef(null);
   if (!audioRef.current && typeof Audio !== 'undefined') {
@@ -195,30 +199,63 @@ export function PlayerProvider({ children }) {
     [library]
   );
 
-  const download = useCallback(async (track) => {
-    if (isDownloaded(track.id) || downloading[track.id]) return;
-    // Store the whole track (not just a flag) so in-progress downloads can be
-    // rendered in the Library while they finish.
-    setDownloading((d) => ({ ...d, [track.id]: track }));
+  // Downloads run through a small concurrency-limited queue. Tapping download
+  // on many songs at once used to fire every request in parallel, which
+  // overwhelmed the laptop (one yt-dlp+ffmpeg per song) and the free ngrok
+  // tunnel — so some requests got dropped and failed. We now run at most
+  // MAX_CONCURRENT_DOWNLOADS at a time and queue the rest.
+  const dlPendingRef = useRef([]);     // tracks waiting their turn
+  const dlActiveRef = useRef(0);       // number currently downloading
+  const dlSeenRef = useRef(new Set()); // ids queued or in-flight (dedupes taps)
+
+  const runDownload = useCallback(async (track) => {
     try {
       const cache = await caches.open(AUDIO_CACHE);
       // Fetch the full file (200) with the ngrok-skip header, then cache it for
       // offline use. (cache.add can't set headers, so we do it manually.)
       const res = await fetch(streamUrl(track.id), { headers: API_HEADERS });
-      if (!res.ok) throw new Error(`Download failed (${res.status})`);
+      if (!res.ok) throw new Error(`server returned HTTP ${res.status}`);
       await cache.put(streamUrl(track.id), res);
       setLibrary((lib) => (lib.find((t) => t.id === track.id) ? lib : [{ ...track, downloadedAt: Date.now() }, ...lib]));
     } catch (e) {
-      console.error('download failed', e);
-      alert('Download failed. Is the backend reachable?');
+      console.error('download failed:', track.id, e);
+      // A fetch that can't reach the server throws TypeError; everything else
+      // (incl. the SW's synthetic 504 when a connection drops) carries a message.
+      const reason =
+        e?.name === 'TypeError'
+          ? 'could not reach the backend (tunnel down or connection dropped)'
+          : e?.message || 'unknown error';
+      alert(`Couldn't download "${track.title}":\n${reason}`);
     } finally {
+      dlSeenRef.current.delete(track.id);
       setDownloading((d) => {
         const n = { ...d };
         delete n[track.id];
         return n;
       });
     }
-  }, [downloading, isDownloaded]);
+  }, []);
+
+  const pumpDownloads = useCallback(() => {
+    while (dlActiveRef.current < MAX_CONCURRENT_DOWNLOADS && dlPendingRef.current.length) {
+      const track = dlPendingRef.current.shift();
+      dlActiveRef.current += 1;
+      runDownload(track).finally(() => {
+        dlActiveRef.current -= 1;
+        pumpDownloads();
+      });
+    }
+  }, [runDownload]);
+
+  const download = useCallback((track) => {
+    // Skip if already downloaded, or already queued / in-flight. dlSeenRef is a
+    // synchronous guard so a burst of taps can't enqueue the same song twice.
+    if (isDownloaded(track.id) || dlSeenRef.current.has(track.id)) return;
+    dlSeenRef.current.add(track.id);
+    setDownloading((d) => ({ ...d, [track.id]: track })); // spinner shows immediately
+    dlPendingRef.current.push(track);
+    pumpDownloads();
+  }, [isDownloaded, pumpDownloads]);
 
   const removeDownload = useCallback(async (id) => {
     try {
