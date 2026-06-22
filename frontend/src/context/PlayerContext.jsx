@@ -197,7 +197,9 @@ export function PlayerProvider({ children }) {
 
   const download = useCallback(async (track) => {
     if (isDownloaded(track.id) || downloading[track.id]) return;
-    setDownloading((d) => ({ ...d, [track.id]: true }));
+    // Store the whole track (not just a flag) so in-progress downloads can be
+    // rendered in the Library while they finish.
+    setDownloading((d) => ({ ...d, [track.id]: track }));
     try {
       const cache = await caches.open(AUDIO_CACHE);
       // Fetch the full file (200) with the ngrok-skip header, then cache it for

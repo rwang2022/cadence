@@ -82,12 +82,20 @@ export default function SongRow({ track, actions = 'search', trailing }) {
       )}
 
       {actions === 'library' && (
-        <IconBtn
-          onClick={(e) => { e.stopPropagation(); removeDownload(track.id); }}
-          title="Remove download"
-        >
-          <TrashIcon size={20} />
-        </IconBtn>
+        <div className="flex items-center gap-1 shrink-0">
+          <IconBtn
+            onClick={(e) => { e.stopPropagation(); addToQueue(track); }}
+            title={inQueue ? 'In queue' : 'Add to queue'}
+          >
+            {inQueue ? <CheckIcon size={20} className="text-accent" /> : <PlusIcon size={20} />}
+          </IconBtn>
+          <IconBtn
+            onClick={(e) => { e.stopPropagation(); removeDownload(track.id); }}
+            title="Remove download"
+          >
+            <TrashIcon size={20} />
+          </IconBtn>
+        </div>
       )}
     </div>
   );
