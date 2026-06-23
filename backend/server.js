@@ -74,9 +74,22 @@ function toTrack(e) {
 // ---------------------------------------------------------------------------
 // GET /search?q=
 // ---------------------------------------------------------------------------
+
+// Each search spawns a fresh yt-dlp, whose startup dominates the latency. Cache
+// results by query so repeated/refined searches return instantly.
+const SEARCH_TTL_MS = 10 * 60 * 1000;
+const SEARCH_CACHE_MAX = 200;
+const searchCache = new Map(); // normalized q -> { at, results }
+
 app.get('/search', async (req, res) => {
   const q = (req.query.q || '').toString().trim();
   if (!q) return res.status(400).json({ error: 'Missing query param "q"' });
+
+  const key = q.toLowerCase();
+  const hit = searchCache.get(key);
+  if (hit && Date.now() - hit.at < SEARCH_TTL_MS) {
+    return res.json({ results: hit.results });
+  }
 
   try {
     // --flat-playlist keeps search fast (no per-video extraction).
@@ -101,6 +114,13 @@ app.get('/search', async (req, res) => {
       })
       .filter((e) => e && e.id && VIDEO_ID_RE.test(e.id))
       .map(toTrack);
+
+    // Cache and evict the oldest entry if we're over the cap (Map keeps
+    // insertion order, so the first key is the oldest).
+    searchCache.set(key, { at: Date.now(), results });
+    if (searchCache.size > SEARCH_CACHE_MAX) {
+      searchCache.delete(searchCache.keys().next().value);
+    }
 
     res.json({ results });
   } catch (err) {
