@@ -215,8 +215,11 @@ export function PlayerProvider({ children }) {
       // offline use. (cache.add can't set headers, so we do it manually.)
       const res = await fetch(streamUrl(track.id), { headers: API_HEADERS });
       if (!res.ok) throw new Error(`server returned HTTP ${res.status}`);
+      // Record the file size (bytes) for the Library storage display.
+      const cl = Number(res.headers.get('content-length'));
+      const size = cl > 0 ? cl : (await res.clone().blob()).size;
       await cache.put(streamUrl(track.id), res);
-      setLibrary((lib) => (lib.find((t) => t.id === track.id) ? lib : [{ ...track, downloadedAt: Date.now() }, ...lib]));
+      setLibrary((lib) => (lib.find((t) => t.id === track.id) ? lib : [{ ...track, downloadedAt: Date.now(), size }, ...lib]));
     } catch (e) {
       console.error('download failed:', track.id, e);
       // A fetch that can't reach the server throws TypeError; everything else
@@ -256,6 +259,32 @@ export function PlayerProvider({ children }) {
     dlPendingRef.current.push(track);
     pumpDownloads();
   }, [isDownloaded, pumpDownloads]);
+
+  // Backfill byte sizes for songs downloaded before sizes were tracked, by
+  // reading them out of the audio cache. Runs only while something is missing.
+  useEffect(() => {
+    if (!library.some((t) => t.size == null)) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const cache = await caches.open(AUDIO_CACHE);
+        const updated = await Promise.all(
+          library.map(async (t) => {
+            if (t.size != null) return t;
+            const resp = await cache.match(streamUrl(t.id));
+            if (!resp) return { ...t, size: 0 };
+            const cl = Number(resp.headers.get('content-length'));
+            const size = cl > 0 ? cl : (await resp.clone().blob()).size;
+            return { ...t, size };
+          })
+        );
+        if (!cancelled) setLibrary(updated);
+      } catch {
+        /* ignore — sizes will just show as unknown */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [library]);
 
   const removeDownload = useCallback(async (id) => {
     try {

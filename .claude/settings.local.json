@@ -5,7 +5,11 @@
       "PowerShell(\"---\")",
       "mcp__Claude_Preview__preview_start",
       "PowerShell(Get-NetTCPConnection -LocalPort 3001 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { $p = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue; \"PID $\\($_.OwningProcess\\)  $\\($p.ProcessName\\)  $\\($p.Path\\)\" })",
-      "PowerShell(\\(Invoke-RestMethod http://localhost:4200/health | ConvertTo-Json -Compress\\))"
+      "PowerShell(\\(Invoke-RestMethod http://localhost:4200/health | ConvertTo-Json -Compress\\))",
+      "Bash(curl -s -m 15 -H \"ngrok-skip-browser-warning: 1\" \"https://say-sixfold-scrap.ngrok-free.dev/health\")",
+      "Bash(echo \"\\(exit: $?\\)\")",
+      "Bash(curl -s -m 120 -D - -o /tmp/dl.mp3 -H 'ngrok-skip-browser-warning: 1' __TRACKED_VAR__/stream/__TRACKED_VAR__ -w '\\\\n--- status:%{http_code} size:%{size_download} time:%{time_total}s content_type:%{content_type} ---\\\\n')",
+      "PowerShell(npm run build --prefix frontend 2>&1)"
     ]
   }
 }

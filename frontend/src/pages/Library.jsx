@@ -1,6 +1,6 @@
 import { usePlayer } from '../context/PlayerContext.jsx';
 import SongRow from '../components/SongRow.jsx';
-import { fmtTime } from '../lib/format.js';
+import { fmtTime, fmtBytes } from '../lib/format.js';
 import { DownloadIcon } from '../components/Icons.jsx';
 
 export default function Library() {
@@ -13,13 +13,15 @@ export default function Library() {
   );
 
   const isEmpty = library.length === 0 && pending.length === 0;
+  const totalBytes = library.reduce((sum, t) => sum + (t.size || 0), 0);
 
   return (
     <div className="h-full flex flex-col">
       <div className="px-4 pt-2 pb-3">
         <h1 className="text-3xl font-bold">Library</h1>
         <p className="text-muted text-sm mt-1">
-          {library.length} downloaded {library.length === 1 ? 'song' : 'songs'} · plays offline
+          {library.length} downloaded {library.length === 1 ? 'song' : 'songs'}
+          {totalBytes > 0 && <> · {fmtBytes(totalBytes)}</>} · plays offline
         </p>
       </div>
 
@@ -35,7 +37,16 @@ export default function Library() {
               <DownloadingRow key={t.id} track={t} />
             ))}
             {library.map((t) => (
-              <SongRow key={t.id} track={t} actions="library" />
+              <SongRow
+                key={t.id}
+                track={t}
+                actions="library"
+                trailing={
+                  <span className="text-[12px] text-muted tabular-nums shrink-0">
+                    {fmtBytes(t.size)}
+                  </span>
+                }
+              />
             ))}
           </>
         )}
