@@ -207,6 +207,10 @@ export function PlayerProvider({ children }) {
   const dlPendingRef = useRef([]);     // tracks waiting their turn
   const dlActiveRef = useRef(0);       // number currently downloading
   const dlSeenRef = useRef(new Set()); // ids queued or in-flight (dedupes taps)
+  // id -> tags to stamp onto a song once its download lands. Used when a song is
+  // tagged from search (Option A): tagging triggers a download, and the tag is
+  // applied here when the file finishes caching.
+  const pendingTagsRef = useRef({});
 
   const runDownload = useCallback(async (track) => {
     try {
@@ -219,7 +223,10 @@ export function PlayerProvider({ children }) {
       const cl = Number(res.headers.get('content-length'));
       const size = cl > 0 ? cl : (await res.clone().blob()).size;
       await cache.put(streamUrl(track.id), res);
-      setLibrary((lib) => (lib.find((t) => t.id === track.id) ? lib : [{ ...track, downloadedAt: Date.now(), size }, ...lib]));
+      // Apply any tags queued while this song was still downloading (Option A).
+      const tags = pendingTagsRef.current[track.id] || [];
+      delete pendingTagsRef.current[track.id];
+      setLibrary((lib) => (lib.find((t) => t.id === track.id) ? lib : [{ ...track, downloadedAt: Date.now(), size, tags }, ...lib]));
     } catch (e) {
       console.error('download failed:', track.id, e);
       // A fetch that can't reach the server throws TypeError; everything else
@@ -296,6 +303,34 @@ export function PlayerProvider({ children }) {
     setLibrary((lib) => lib.filter((t) => t.id !== id));
   }, []);
 
+  // Add/remove a tag on a track. If the track is already in the library we just
+  // flip the label. If it isn't (tagged straight from search — Option A), we
+  // remember the tag and kick off a download; runDownload stamps it on arrival.
+  const toggleTag = useCallback((track, tag) => {
+    const t = tag.trim();
+    if (!t) return;
+    if (library.some((x) => x.id === track.id)) {
+      setLibrary((lib) =>
+        lib.map((x) =>
+          x.id !== track.id
+            ? x
+            : {
+                ...x,
+                tags: (x.tags || []).includes(t)
+                  ? x.tags.filter((y) => y !== t)
+                  : [...(x.tags || []), t],
+              }
+        )
+      );
+      return;
+    }
+    const pend = pendingTagsRef.current[track.id] || [];
+    pendingTagsRef.current[track.id] = pend.includes(t)
+      ? pend.filter((y) => y !== t)
+      : [...pend, t];
+    download(track);
+  }, [library, download]);
+
   // ---- Media Session (lock screen / control center) ------------------------
   function updateMediaSession(track) {
     if (!('mediaSession' in navigator) || !track) return;
@@ -327,7 +362,7 @@ export function PlayerProvider({ children }) {
       setShowNowPlaying,
       preload, playTrack, togglePlay, playNext, playPrev, seek, skip, setVolume,
       addToQueue, removeFromQueue, reorderQueue, clearQueue,
-      download, removeDownload, isDownloaded,
+      download, removeDownload, isDownloaded, toggleTag,
     }),
     [
       current, isPlaying, currentTime, duration, volume, buffering,

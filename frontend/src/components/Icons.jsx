@@ -57,3 +57,6 @@ export const DragIcon = (p) => (
 export const MusicIcon = (p) => (
   <S {...p}><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></S>
 );
+export const TagIcon = (p) => (
+  <S {...p}><path d="M3 11.5V4a1 1 0 0 1 1-1h7.5a1 1 0 0 1 .7.3l8 8a1 1 0 0 1 0 1.4l-7.5 7.5a1 1 0 0 1-1.4 0l-8-8a1 1 0 0 1-.3-.7Z" /><circle cx="7.5" cy="7.5" r="1.3" fill="currentColor" /></S>
+);

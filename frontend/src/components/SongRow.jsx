@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import { usePlayer } from '../context/PlayerContext.jsx';
 import { fmtTime } from '../lib/format.js';
 import {
-  PlusIcon, CheckIcon, DownloadIcon, DownloadedIcon, TrashIcon,
+  PlusIcon, CheckIcon, DownloadIcon, DownloadedIcon, TrashIcon, TagIcon,
 } from './Icons.jsx';
+import TagSheet from './TagSheet.jsx';
 
 /**
  * A single track row. `actions` chooses which buttons appear:
@@ -20,8 +22,10 @@ export default function SongRow({ track, actions = 'search', trailing }) {
   const inQueue = queue.some((t) => t.id === track.id);
   const downloaded = isDownloaded(track.id);
   const isDownloading = !!downloading[track.id];
+  const [tagOpen, setTagOpen] = useState(false);
 
   return (
+    <>
     <div
       className={`group flex items-center gap-3 px-4 py-2.5 active:bg-surface2 transition-colors ${
         active ? 'bg-surface2' : ''
@@ -60,6 +64,12 @@ export default function SongRow({ track, actions = 'search', trailing }) {
       {actions === 'search' && (
         <div className="flex items-center gap-1 shrink-0">
           <IconBtn
+            onClick={(e) => { e.stopPropagation(); setTagOpen(true); }}
+            title="Tag"
+          >
+            <TagIcon size={20} className={downloaded ? 'text-accent' : ''} />
+          </IconBtn>
+          <IconBtn
             onClick={(e) => { e.stopPropagation(); addToQueue(track); }}
             title={inQueue ? 'In queue' : 'Add to queue'}
           >
@@ -84,6 +94,12 @@ export default function SongRow({ track, actions = 'search', trailing }) {
       {actions === 'library' && (
         <div className="flex items-center gap-1 shrink-0">
           <IconBtn
+            onClick={(e) => { e.stopPropagation(); setTagOpen(true); }}
+            title="Tag"
+          >
+            <TagIcon size={20} className={track.tags?.length ? 'text-accent' : ''} />
+          </IconBtn>
+          <IconBtn
             onClick={(e) => { e.stopPropagation(); addToQueue(track); }}
             title={inQueue ? 'In queue' : 'Add to queue'}
           >
@@ -98,6 +114,8 @@ export default function SongRow({ track, actions = 'search', trailing }) {
         </div>
       )}
     </div>
+    {tagOpen && <TagSheet track={track} onClose={() => setTagOpen(false)} />}
+    </>
   );
 }
 
