@@ -1,12 +1,13 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { usePlayer } from '../context/PlayerContext.jsx';
 import SongRow from '../components/SongRow.jsx';
 import { fmtTime, fmtBytes } from '../lib/format.js';
-import { DownloadIcon } from '../components/Icons.jsx';
+import { DownloadIcon, SearchIcon } from '../components/Icons.jsx';
 
 export default function Library() {
   const { library, downloading, addToQueue } = usePlayer();
   const [filter, setFilter] = useState(null);
+  const [query, setQuery] = useState('');
 
   // Tracks mid-download that aren't in the library yet — shown greyed out with
   // a spinner until the file finishes caching.
@@ -18,10 +19,31 @@ export default function Library() {
   // it still exists (so removing a tag's last song falls back to "All").
   const allTags = [...new Set(library.flatMap((t) => t.tags || []))].sort();
   const active = filter && allTags.includes(filter) ? filter : null;
-  const shown = active ? library.filter((t) => (t.tags || []).includes(active)) : library;
+
+  // Precompute a lowercase "title artist tags" haystack per song once per library
+  // change, so typing only does cheap substring tests — no re-lowercasing per key.
+  const indexed = useMemo(
+    () =>
+      library.map((t) => ({
+        track: t,
+        hay: `${t.title} ${t.artist} ${(t.tags || []).join(' ')}`.toLowerCase(),
+      })),
+    [library]
+  );
+
+  const q = query.trim().toLowerCase();
+  const shown = useMemo(
+    () =>
+      indexed
+        .filter(({ track }) => !active || (track.tags || []).includes(active))
+        .filter(({ hay }) => !q || hay.includes(q))
+        .map(({ track }) => track),
+    [indexed, active, q]
+  );
 
   const isEmpty = library.length === 0 && pending.length === 0;
   const totalBytes = library.reduce((sum, t) => sum + (t.size || 0), 0);
+  const noMatches = !isEmpty && shown.length === 0;
 
   return (
     <div className="h-full flex flex-col">
@@ -33,6 +55,31 @@ export default function Library() {
         </p>
       </div>
 
+      {library.length > 8 && (
+        <div className="px-4 pb-3">
+          <div className="flex items-center gap-2 rounded-xl bg-surface2 px-3 h-10">
+            <SearchIcon size={18} className="text-muted shrink-0" />
+            <input
+              type="search"
+              inputMode="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search your library"
+              className="flex-1 min-w-0 bg-transparent text-[15px] text-white placeholder:text-muted outline-none"
+            />
+            {query && (
+              <button
+                onClick={() => setQuery('')}
+                aria-label="Clear search"
+                className="shrink-0 text-muted text-lg leading-none px-1 active:scale-90"
+              >
+                ×
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {allTags.length > 0 && (
         <div className="flex items-center gap-2 px-4 pb-3 overflow-x-auto no-scrollbar">
           <Chip on={!active} onClick={() => setFilter(null)}>All</Chip>
@@ -41,7 +88,7 @@ export default function Library() {
               {tag}
             </Chip>
           ))}
-          {active && (
+          {(active || q) && shown.length > 0 && (
             <button
               onClick={() => shown.forEach(addToQueue)}
               className="ml-auto shrink-0 text-[13px] text-accent font-medium active:scale-95"
@@ -58,9 +105,14 @@ export default function Library() {
             <DownloadIcon size={48} className="opacity-40" />
             <p>No downloads yet. Tap the download icon on any song to save it for offline listening.</p>
           </div>
+        ) : noMatches ? (
+          <div className="flex flex-col items-center justify-center text-muted gap-3 pt-24 px-8 text-center">
+            <SearchIcon size={48} className="opacity-40" />
+            <p>No songs match "{query.trim()}".</p>
+          </div>
         ) : (
           <>
-            {!active && pending.map((t) => (
+            {!active && !q && pending.map((t) => (
               <DownloadingRow key={t.id} track={t} />
             ))}
             {shown.map((t) => (
