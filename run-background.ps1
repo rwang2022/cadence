@@ -19,7 +19,7 @@
 #      it's the thing YouTube breaks every few weeks. Sets YT_DLP_PATH
 #      so the backend uses it. Also runs `npm install` in backend\ if
 #      node_modules is missing (e.g. right after a fresh clone).
-#   3) Registers three auto-start Scheduled Tasks (creating them the
+#   3) Registers four auto-start Scheduled Tasks (creating them the
 #      first time, updating them on every re-run) that all restart
 #      themselves if they crash:
 #        - "Cadence Backend" - node server.js
@@ -27,11 +27,17 @@
 #        - "Cadence Maintenance" - re-runs THIS SAME SCRIPT weekly, so
 #          yt-dlp stays updated and nothing here ever needs a human to
 #          remember to run it again.
+#        - "Cadence AutoDeploy" - checks every 2 minutes for a new commit
+#          on origin/main and, if found, pulls + restarts the backend -
+#          so `git push` reaches this machine on its own. See
+#          auto-deploy.ps1.
 #   4) Starts the backend + tunnel now, and checks the tunnel is up.
 #
-# Stays fresh: because step 3 makes this script re-run itself weekly,
-# you truly only run it by hand once. Every later run just repeats
-# steps 1-4 (all idempotent/harmless to redo) with a fresh yt-dlp.
+# Stays fresh: because step 3 registers "Cadence AutoDeploy" and "Cadence
+# Maintenance", you truly only run this by hand once - every future push
+# goes live within ~2 minutes on its own, and yt-dlp/power settings get
+# refreshed weekly. Every later manual run just repeats steps 1-4 (all
+# idempotent/harmless to redo).
 #
 # Prereqs (install first): node, ngrok - both on PATH, with
 # `ngrok config add-authtoken <token>` already run once.
@@ -183,51 +189,35 @@ Register-ScheduledTask -TaskName "Cadence Maintenance" -Action $maintAction -Tri
 Log "  'Cadence Maintenance' registered (re-runs this script every $IntervalDays day(s) at $MaintTime)."
 
 # --- 4) start backend + tunnel now, then sanity-check -----------------
-Log "Restarting backend + tunnel now..."
-Stop-ScheduledTask -TaskName "Cadence Backend" -ErrorAction SilentlyContinue
-Stop-ScheduledTask -TaskName "Cadence Tunnel"  -ErrorAction SilentlyContinue
+& (Join-Path $RepoPath "restart-cadence.ps1") -NodeExe $nodeExe -Domain $Domain -Port $Port -LogFile $logFile
 
-# Stop-ScheduledTask only signals the task; it doesn't reliably kill node/ngrok
-# processes left behind by a crash or a manual run outside the task, which then
-# hold the port/tunnel open and make the freshly-started task fail silently.
-# Find and kill any such leftovers by command line before restarting.
-function Stop-OrphanedProcess([string]$ProcessName, [string]$Pattern, [int]$TimeoutSec = 10) {
-  $procs = Get-CimInstance Win32_Process -Filter "Name = '$ProcessName'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -and $_.CommandLine -match $Pattern }
-  foreach ($p in $procs) {
-    Log "  Stopping orphaned $ProcessName (PID $($p.ProcessId)): $($p.CommandLine)"
-    Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
-  }
-  if ($procs) {
-    $deadline = (Get-Date).AddSeconds($TimeoutSec)
-    while ((Get-Date) -lt $deadline -and ($procs | Where-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue })) {
-      Start-Sleep -Milliseconds 500
-    }
-  }
-}
-# Scope the match to *this* node.exe running *this* server.js, not just any
-# process anywhere whose command line happens to contain "server.js".
-Stop-OrphanedProcess -ProcessName "node.exe"  -Pattern ([regex]::Escape($nodeExe) + '.*server\.js')
-Stop-OrphanedProcess -ProcessName "ngrok.exe" -Pattern ([regex]::Escape($Domain))
+# --- 5) register the fast-polling auto-deploy Scheduled Task ---------
+# Checks every 2 minutes for a new commit on origin/main and, if found,
+# pulls + npm installs + restarts the backend/tunnel - so a `git push` is
+# live on this machine within ~2 minutes without ever needing a manual
+# admin restart again. See auto-deploy.ps1 for exactly what it does (and
+# does NOT do - it stays deliberately lightweight).
+Log "Registering Scheduled Task 'Cadence AutoDeploy'..."
+$deploySettings = New-ScheduledTaskSettingsSet `
+  -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
+  -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+$deployPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U -RunLevel Highest
+$deployTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+  -RepetitionInterval (New-TimeSpan -Minutes 2) -RepetitionDuration ([TimeSpan]::MaxValue)
+$deployScriptPath = Join-Path $RepoPath "auto-deploy.ps1"
+$deployAction = New-ScheduledTaskAction -Execute "powershell.exe" `
+  -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$deployScriptPath`" -RepoPath `"$RepoPath`" -Domain `"$Domain`" -Port $Port" `
+  -WorkingDirectory $RepoPath
 
-Start-Sleep -Seconds 1
-Start-ScheduledTask -TaskName "Cadence Backend"
-Start-Sleep -Seconds 2
-Start-ScheduledTask -TaskName "Cadence Tunnel"
-Start-Sleep -Seconds 4
-
-try {
-  $h = Invoke-RestMethod "https://$Domain/health" -Headers @{ "ngrok-skip-browser-warning" = "1" } -TimeoutSec 15
-  Log "  tunnel health: $($h | ConvertTo-Json -Compress)"
-} catch {
-  Log "  WARNING: couldn't reach https://$Domain/health yet. Give it a minute, or check the tasks in Task Scheduler."
-}
+Register-ScheduledTask -TaskName "Cadence AutoDeploy" -Action $deployAction -Trigger $deployTrigger -Settings $deploySettings -Principal $deployPrincipal -Force | Out-Null
+Log "  'Cadence AutoDeploy' registered (checks for a new push every 2 minutes)."
 
 Log "Done."
 Write-Host ""
 Write-Host "Cadence is running and will auto-start on every boot." -ForegroundColor Green
+Write-Host "A push to main goes live within ~2 minutes via 'Cadence AutoDeploy' - no more manual restarts." -ForegroundColor Green
 Write-Host "yt-dlp will auto-refresh every $IntervalDays day(s) at $MaintTime via 'Cadence Maintenance'." -ForegroundColor Green
 Write-Host "Log file: $logFile"
 Write-Host ""
-Write-Host "To stop everything:   Stop-ScheduledTask 'Cadence Backend','Cadence Tunnel','Cadence Maintenance'"
-Write-Host "To remove everything: Get-ScheduledTask 'Cadence Backend','Cadence Tunnel','Cadence Maintenance' | Unregister-ScheduledTask -Confirm:`$false"
+Write-Host "To stop everything:   Stop-ScheduledTask 'Cadence Backend','Cadence Tunnel','Cadence Maintenance','Cadence AutoDeploy'"
+Write-Host "To remove everything: Get-ScheduledTask 'Cadence Backend','Cadence Tunnel','Cadence Maintenance','Cadence AutoDeploy' | Unregister-ScheduledTask -Confirm:`$false"
