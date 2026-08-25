@@ -1,29 +1,29 @@
-# =====================================================================
-# Cadence — always-on host setup (Windows, laptop or desktop)
+﻿# =====================================================================
+# Cadence - always-on host setup (Windows, laptop or desktop)
 # Run this ONCE, in PowerShell *as Administrator*, from the repo root:
 #     powershell -ExecutionPolicy Bypass -File .\run-background.ps1
 #
-# This is the only script you need to run — it replaces the old
+# This is the only script you need to run - it replaces the old
 # laptop-setup.ps1, laptop-search-speedup.ps1, laptop-ytdlp-autoupdate.ps1,
 # and run-cadence.cmd (all removed; this file does everything they did).
-# The lid-close power setting below is a no-op on a desktop with no lid —
+# The lid-close power setting below is a no-op on a desktop with no lid -
 # everything else works the same on either.
 #
 # What it does, every time it runs (this first run, and every
-# re-run — see "stays fresh" below):
+# re-run - see "stays fresh" below):
 #   1) Stops the laptop from sleeping/hibernating; closing the lid does
 #      nothing (screen still turns off to save power).
 #   2) Makes sure yt-dlp is installed via a real Python (not the slow
-#      winget standalone build) and upgrades it to the latest version —
+#      winget standalone build) and upgrades it to the latest version -
 #      this is what actually resolves + downloads playable audio, and
 #      it's the thing YouTube breaks every few weeks. Sets YT_DLP_PATH
 #      so the backend uses it.
 #   3) Registers three auto-start Scheduled Tasks (creating them the
 #      first time, updating them on every re-run) that all restart
 #      themselves if they crash:
-#        - "Cadence Backend" — node server.js
-#        - "Cadence Tunnel"  — the ngrok tunnel
-#        - "Cadence Maintenance" — re-runs THIS SAME SCRIPT weekly, so
+#        - "Cadence Backend" - node server.js
+#        - "Cadence Tunnel"  - the ngrok tunnel
+#        - "Cadence Maintenance" - re-runs THIS SAME SCRIPT weekly, so
 #          yt-dlp stays updated and nothing here ever needs a human to
 #          remember to run it again.
 #   4) Starts the backend + tunnel now, and checks the tunnel is up.
@@ -32,7 +32,7 @@
 # you truly only run it by hand once. Every later run just repeats
 # steps 1-4 (all idempotent/harmless to redo) with a fresh yt-dlp.
 #
-# Prereqs (install first): node, ngrok — both on PATH, with
+# Prereqs (install first): node, ngrok - both on PATH, with
 # `ngrok config add-authtoken <token>` already run once.
 # =====================================================================
 
@@ -80,7 +80,7 @@ powercfg /change hibernate-timeout-ac 0
 powercfg /change hibernate-timeout-dc 0
 powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0   # 0 = Do nothing
 powercfg /setdcvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0
-powercfg /change monitor-timeout-ac 5   # screen CAN turn off — doesn't stop the app
+powercfg /change monitor-timeout-ac 5   # screen CAN turn off - doesn't stop the app
 powercfg /change monitor-timeout-dc 10
 powercfg /setactive SCHEME_CURRENT
 Log "  power settings done."
@@ -90,7 +90,7 @@ try {
   Log "Pulling latest code..."
   git -C $RepoPath pull --ff-only 2>&1 | ForEach-Object { Add-Content -Path $logFile -Value $_ }
 } catch {
-  Log "git pull failed ($($_.Exception.Message)) — continuing with the code already on disk."
+  Log "git pull failed ($($_.Exception.Message)) - continuing with the code already on disk."
 }
 
 function Get-RealPython {
