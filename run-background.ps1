@@ -202,8 +202,11 @@ $deploySettings = New-ScheduledTaskSettingsSet `
   -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
   -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
 $deployPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U -RunLevel Highest
+# [TimeSpan]::MaxValue serializes to a duration string ("P99999999DT23H59M59S") that
+# Task Scheduler's XML schema rejects as out of range - 10 years is effectively
+# "indefinitely" here and is well within the accepted range.
 $deployTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
-  -RepetitionInterval (New-TimeSpan -Minutes 2) -RepetitionDuration ([TimeSpan]::MaxValue)
+  -RepetitionInterval (New-TimeSpan -Minutes 2) -RepetitionDuration (New-TimeSpan -Days 3650)
 $deployScriptPath = Join-Path $RepoPath "auto-deploy.ps1"
 $deployAction = New-ScheduledTaskAction -Execute "powershell.exe" `
   -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$deployScriptPath`" -RepoPath `"$RepoPath`" -Domain `"$Domain`" -Port $Port" `
