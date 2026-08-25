@@ -1,11 +1,13 @@
 # =====================================================================
-# Cadence — laptop "always-on host" setup (Windows)
+# Cadence — always-on host setup (Windows, laptop or desktop)
 # Run this ONCE, in PowerShell *as Administrator*, from the repo root:
-#     powershell -ExecutionPolicy Bypass -File .\laptop-setup.ps1
+#     powershell -ExecutionPolicy Bypass -File .\run-background.ps1
 #
 # This is the only script you need to run — it replaces the old
-# laptop-search-speedup.ps1, laptop-ytdlp-autoupdate.ps1, and
-# run-cadence.cmd (all removed; this file does everything they did).
+# laptop-setup.ps1, laptop-search-speedup.ps1, laptop-ytdlp-autoupdate.ps1,
+# and run-cadence.cmd (all removed; this file does everything they did).
+# The lid-close power setting below is a no-op on a desktop with no lid —
+# everything else works the same on either.
 #
 # What it does, every time it runs (this first run, and every
 # re-run — see "stays fresh" below):
