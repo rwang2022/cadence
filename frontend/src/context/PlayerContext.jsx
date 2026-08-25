@@ -350,14 +350,14 @@ export function PlayerProvider({ children }) {
     ms.setActionHandler('pause', () => audio && audio.pause());
     ms.setActionHandler('nexttrack', () => playNextRef.current());
     ms.setActionHandler('previoustrack', () => playPrev());
-    // Deliberately NOT registering seekforward/seekbackward: on iOS and some
-    // Android lock screens, having both seek and next/prev handlers set makes
-    // the OS show the +/-15s seek buttons instead of next/prev track, even
-    // though next/prev are registered too. Leaving seek unregistered makes it
-    // fall back to showing next/prev (skip +/-15s is still available in-app,
-    // via the NowPlaying buttons, which call skip() directly).
-    ms.setActionHandler('seekto', (d) => d.seekTime != null && seek(d.seekTime));
-  }, [audio, playPrev, seek]);
+    // Deliberately NOT registering seekforward/seekbackward/seekto: on iOS,
+    // having ANY seek-related handler registered - even just seekto, which
+    // powers lock-screen scrubbing - makes Control Center show +/-10s seek
+    // buttons instead of next/prev track, regardless of next/prev also being
+    // registered. Leaving all three unset is what actually gets next/prev to
+    // show. Trade-off: no drag-to-seek from the lock screen; in-app scrubbing
+    // (NowPlaying's Scrubber) is unaffected since it calls seek() directly.
+  }, [audio, playPrev]);
 
   const value = useMemo(
     () => ({
