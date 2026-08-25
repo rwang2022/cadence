@@ -17,7 +17,8 @@
 #      winget standalone build) and upgrades it to the latest version -
 #      this is what actually resolves + downloads playable audio, and
 #      it's the thing YouTube breaks every few weeks. Sets YT_DLP_PATH
-#      so the backend uses it.
+#      so the backend uses it. Also runs `npm install` in backend\ if
+#      node_modules is missing (e.g. right after a fresh clone).
 #   3) Registers three auto-start Scheduled Tasks (creating them the
 #      first time, updating them on every re-run) that all restart
 #      themselves if they crash:
@@ -71,6 +72,25 @@ if (-not (Test-Path (Join-Path $backendDir "server.js"))) { Write-Error "Can't f
 Log "node : $nodeExe"
 Log "ngrok: $ngrokExe"
 Log "repo : $RepoPath"
+
+# --- backend dependencies: install if missing (e.g. after a fresh clone) ---
+if (-not (Test-Path (Join-Path $backendDir "node_modules"))) {
+  Log "backend\node_modules missing - running npm install..."
+  Push-Location $backendDir
+  try {
+    $npmOutput = & npm install 2>&1 | Out-String
+    Add-Content -Path $logFile -Value $npmOutput.TrimEnd()
+  } finally {
+    Pop-Location
+  }
+  if (-not (Test-Path (Join-Path $backendDir "node_modules\express"))) {
+    Write-Error "npm install in backend\ did not produce node_modules\express - check the log."
+    exit 1
+  }
+  Log "  npm install done."
+} else {
+  Log "backend dependencies already installed."
+}
 
 # --- 1) power settings: never sleep; lid close = stay on -------------
 Log "Configuring power (never sleep; lid close = stay on)..."
