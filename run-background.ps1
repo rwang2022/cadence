@@ -191,9 +191,9 @@ Stop-ScheduledTask -TaskName "Cadence Tunnel"  -ErrorAction SilentlyContinue
 # processes left behind by a crash or a manual run outside the task, which then
 # hold the port/tunnel open and make the freshly-started task fail silently.
 # Find and kill any such leftovers by command line before restarting.
-function Stop-OrphanedProcess([string]$ProcessName, [string]$CommandLineMatch, [int]$TimeoutSec = 10) {
+function Stop-OrphanedProcess([string]$ProcessName, [string]$Pattern, [int]$TimeoutSec = 10) {
   $procs = Get-CimInstance Win32_Process -Filter "Name = '$ProcessName'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -and $_.CommandLine -match [regex]::Escape($CommandLineMatch) }
+    Where-Object { $_.CommandLine -and $_.CommandLine -match $Pattern }
   foreach ($p in $procs) {
     Log "  Stopping orphaned $ProcessName (PID $($p.ProcessId)): $($p.CommandLine)"
     Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
@@ -205,8 +205,10 @@ function Stop-OrphanedProcess([string]$ProcessName, [string]$CommandLineMatch, [
     }
   }
 }
-Stop-OrphanedProcess -ProcessName "node.exe"  -CommandLineMatch "server.js"
-Stop-OrphanedProcess -ProcessName "ngrok.exe" -CommandLineMatch $Domain
+# Scope the match to *this* node.exe running *this* server.js, not just any
+# process anywhere whose command line happens to contain "server.js".
+Stop-OrphanedProcess -ProcessName "node.exe"  -Pattern ([regex]::Escape($nodeExe) + '.*server\.js')
+Stop-OrphanedProcess -ProcessName "ngrok.exe" -Pattern ([regex]::Escape($Domain))
 
 Start-Sleep -Seconds 1
 Start-ScheduledTask -TaskName "Cadence Backend"
