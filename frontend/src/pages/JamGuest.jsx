@@ -1,13 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
-import { search, getJam, addToJam } from '../api.js';
+import { search, addToJam, joinJam, pingJam, leaveJamBeacon } from '../api.js';
 import { SearchIcon, MusicIcon, PlusIcon, CheckIcon } from '../components/Icons.jsx';
 import { fmtTime } from '../lib/format.js';
+import { getOrCreateGuestId } from '../lib/storage.js';
+import { emojiFor } from '../lib/animals.js';
+
+const HEARTBEAT_MS = 5000;
 
 // Minimal, standalone page opened via a Jam share link. Deliberately has no
 // player, library, or download UI - just search + add to the host's Jam
 // queue. Does not use PlayerContext at all.
 export default function JamGuest({ roomId }) {
   const [roomState, setRoomState] = useState('checking'); // checking | ok | gone
+  const [myName, setMyName] = useState(null);
   const [q, setQ] = useState('');
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -15,12 +20,31 @@ export default function JamGuest({ roomId }) {
   const [addedIds, setAddedIds] = useState(() => new Set());
   const abortRef = useRef(null);
 
+  // Join once on open (registers presence + gets our animal name), then send
+  // a heartbeat so the host's guest list keeps showing us as active, and let
+  // the room know if we close the tab.
   useEffect(() => {
     let cancelled = false;
-    getJam(roomId)
-      .then((room) => { if (!cancelled) setRoomState(room ? 'ok' : 'gone'); })
+    const clientId = getOrCreateGuestId();
+
+    joinJam(roomId, clientId)
+      .then((res) => {
+        if (cancelled) return;
+        if (!res) { setRoomState('gone'); return; }
+        setMyName(res.name);
+        setRoomState('ok');
+      })
       .catch(() => { if (!cancelled) setRoomState('gone'); });
-    return () => { cancelled = true; };
+
+    const heartbeat = setInterval(() => pingJam(roomId, clientId), HEARTBEAT_MS);
+    const onLeave = () => leaveJamBeacon(roomId, clientId);
+    window.addEventListener('pagehide', onLeave);
+
+    return () => {
+      cancelled = true;
+      clearInterval(heartbeat);
+      window.removeEventListener('pagehide', onLeave);
+    };
   }, [roomId]);
 
   useEffect(() => {
@@ -69,7 +93,14 @@ export default function JamGuest({ roomId }) {
   return (
     <div className="h-full flex flex-col bg-bg text-white safe-top">
       <div className="px-4 pt-3 pb-3">
-        <p className="text-xs text-accent font-semibold tracking-wide uppercase mb-1">Cadence Jam</p>
+        <div className="flex items-center justify-between gap-2 mb-1">
+          <p className="text-xs text-accent font-semibold tracking-wide uppercase">Cadence Jam</p>
+          {myName && (
+            <p className="text-xs text-muted shrink-0">
+              You're {emojiFor(myName)} <span className="text-white font-medium">{myName}</span>
+            </p>
+          )}
+        </div>
         <h1 className="text-2xl font-bold mb-3">Add a song to the queue</h1>
         <div className="flex items-center gap-2 bg-surface2 rounded-xl px-3.5 h-11">
           <SearchIcon size={20} className="text-muted shrink-0" />

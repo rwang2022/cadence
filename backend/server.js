@@ -11,10 +11,13 @@
  *
  *   Jam (shared queue via link) - rooms live in memory only, gone on restart:
  *   POST   /jam/create             -> { roomId }
- *   GET    /jam/:roomId            -> { queue } | 404
+ *   GET    /jam/:roomId            -> { queue, guests: [name, ...] } | 404
  *   POST   /jam/:roomId/add        -> body { track } -> { queue }
  *   DELETE /jam/:roomId/entry/:id  -> host dismisses/accepts one entry -> { queue }
  *   DELETE /jam/:roomId            -> host ends the Jam
+ *   POST   /jam/:roomId/join       -> body { clientId? } -> { clientId, name }
+ *   POST   /jam/:roomId/ping       -> body { clientId } -> { ok } (heartbeat)
+ *   POST   /jam/:roomId/leave      -> body { clientId } -> { ok } (sendBeacon on close)
  */
 
 const express = require('express');
@@ -242,10 +245,36 @@ app.get('/stream/:videoId', async (req, res) => {
 // ---------------------------------------------------------------------------
 const ROOM_TTL_MS = 12 * 60 * 60 * 1000; // 12h
 const ROOM_MAX_QUEUE = 100; // cap pending (not-yet-reviewed) entries per room
-const jamRooms = new Map(); // roomId -> { queue: [{entryId, track, addedAt}], createdAt }
+const GUEST_TIMEOUT_MS = 15 * 1000; // no heartbeat in this long = considered gone
+// Keep in sync with frontend/src/lib/animals.js (name -> emoji map).
+const JAM_ANIMALS = [
+  'Otter', 'Bear', 'Cat', 'Dog', 'Fox', 'Owl', 'Wolf', 'Panda', 'Koala', 'Tiger',
+  'Lion', 'Rabbit', 'Deer', 'Eagle', 'Dolphin', 'Whale', 'Seal', 'Penguin',
+  'Squirrel', 'Beaver', 'Badger', 'Hedgehog', 'Raccoon', 'Elephant', 'Giraffe',
+  'Zebra', 'Monkey', 'Frog', 'Turtle',
+];
+const jamRooms = new Map(); // roomId -> { queue, guests: Map<clientId,{name,lastSeen}>, createdAt }
 
 function newId(len) {
   return Array.from({ length: len }, () => Math.floor(Math.random() * 36).toString(36)).join('');
+}
+
+function pruneGuests(room) {
+  const cutoff = Date.now() - GUEST_TIMEOUT_MS;
+  for (const [id, g] of room.guests) {
+    if (g.lastSeen < cutoff) room.guests.delete(id);
+  }
+}
+
+// Pick an animal not currently in use in this room where possible, so two
+// people at once look distinct (falls back to a numbered repeat once the
+// list is exhausted, which only matters for a large group).
+function pickAnimalName(room) {
+  const used = new Set([...room.guests.values()].map((g) => g.name));
+  const free = JAM_ANIMALS.filter((a) => !used.has(a));
+  if (free.length) return free[Math.floor(Math.random() * free.length)];
+  const base = JAM_ANIMALS[Math.floor(Math.random() * JAM_ANIMALS.length)];
+  return `${base} ${used.size + 1}`;
 }
 
 setInterval(() => {
@@ -273,14 +302,54 @@ function sanitizeTrack(track) {
 
 app.post('/jam/create', (_req, res) => {
   const roomId = newId(6);
-  jamRooms.set(roomId, { queue: [], createdAt: Date.now() });
+  jamRooms.set(roomId, { queue: [], guests: new Map(), createdAt: Date.now() });
   res.json({ roomId });
 });
 
 app.get('/jam/:roomId', (req, res) => {
   const room = jamRooms.get(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Jam not found (it may have ended)' });
-  res.json({ queue: room.queue });
+  pruneGuests(room);
+  res.json({ queue: room.queue, guests: [...room.guests.values()].map((g) => g.name) });
+});
+
+// A guest calls this once on opening the link. clientId is a random id the
+// guest generates and persists in localStorage, so reopening the link (or a
+// stray extra heartbeat) reuses the same animal name instead of minting a
+// new one every time.
+app.post('/jam/:roomId/join', (req, res) => {
+  const room = jamRooms.get(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Jam not found (it may have ended)' });
+  pruneGuests(room);
+
+  let clientId = String(req.body?.clientId || '');
+  if (!/^[A-Za-z0-9_-]{8,64}$/.test(clientId)) clientId = newId(16);
+
+  let guest = room.guests.get(clientId);
+  if (!guest) {
+    guest = { name: pickAnimalName(room), lastSeen: Date.now() };
+    room.guests.set(clientId, guest);
+  } else {
+    guest.lastSeen = Date.now();
+  }
+  res.json({ clientId, name: guest.name });
+});
+
+app.post('/jam/:roomId/ping', (req, res) => {
+  const room = jamRooms.get(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Jam not found (it may have ended)' });
+  const guest = room.guests.get(String(req.body?.clientId || ''));
+  if (guest) guest.lastSeen = Date.now();
+  pruneGuests(room);
+  res.json({ ok: true });
+});
+
+// Best-effort immediate removal on tab close (sent via sendBeacon); if it
+// never arrives, pruneGuests drops the guest after GUEST_TIMEOUT_MS anyway.
+app.post('/jam/:roomId/leave', (req, res) => {
+  const room = jamRooms.get(req.params.roomId);
+  if (room) room.guests.delete(String(req.body?.clientId || ''));
+  res.json({ ok: true });
 });
 
 app.post('/jam/:roomId/add', (req, res) => {

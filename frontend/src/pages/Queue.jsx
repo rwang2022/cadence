@@ -3,6 +3,7 @@ import { usePlayer } from '../context/PlayerContext.jsx';
 import { fmtTime } from '../lib/format.js';
 import { createJam, getJam, removeJamEntry, endJam } from '../api.js';
 import { loadJamRoom, saveJamRoom } from '../lib/storage.js';
+import { emojiFor } from '../lib/animals.js';
 import { TrashIcon, QueueIcon, DragIcon, PlusIcon } from '../components/Icons.jsx';
 
 const JAM_POLL_MS = 4000;
@@ -16,11 +17,12 @@ export default function Queue() {
   // ---- Jam: shared queue via link -------------------------------------
   const [jamRoomId, setJamRoomId] = useState(() => loadJamRoom());
   const [jamQueue, setJamQueue] = useState([]);
+  const [jamGuests, setJamGuests] = useState([]); // animal names currently active
   const [jamStarting, setJamStarting] = useState(false);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    if (!jamRoomId) { setJamQueue([]); return; }
+    if (!jamRoomId) { setJamQueue([]); setJamGuests([]); return; }
     let cancelled = false;
     const poll = async () => {
       try {
@@ -33,6 +35,7 @@ export default function Queue() {
           return;
         }
         setJamQueue(room.queue);
+        setJamGuests(room.guests || []);
       } catch {
         /* transient network hiccup - next poll will retry */
       }
@@ -178,6 +181,21 @@ export default function Queue() {
                 </button>
               </div>
             </div>
+
+            <p className="text-[12px] text-muted mt-1.5">
+              {jamGuests.length === 0 ? (
+                'Waiting for people to join…'
+              ) : (
+                <>
+                  {jamGuests.length} {jamGuests.length === 1 ? 'person' : 'people'} in:{' '}
+                  {jamGuests.map((name, i) => (
+                    <span key={name + i} className="text-white">
+                      {emojiFor(name)} {name}{i < jamGuests.length - 1 ? ', ' : ''}
+                    </span>
+                  ))}
+                </>
+              )}
+            </p>
 
             {jamQueue.length > 0 && (
               <div className="mt-2.5 flex flex-col gap-2">

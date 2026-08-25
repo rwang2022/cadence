@@ -36,7 +36,37 @@ export async function getJam(roomId, signal) {
   const res = await fetch(`${API_BASE}/jam/${roomId}`, { signal, headers: API_HEADERS });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Jam lookup failed (${res.status})`);
-  return res.json(); // { queue: [{ entryId, track, addedAt }] }
+  return res.json(); // { queue: [{ entryId, track, addedAt }], guests: [name, ...] }
+}
+
+// Returns null (not thrown) for a 404 so a dead link can show "ended" cleanly.
+export async function joinJam(roomId, clientId) {
+  const res = await fetch(`${API_BASE}/jam/${roomId}/join`, {
+    method: 'POST',
+    headers: { ...API_HEADERS, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ clientId }),
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Couldn't join Jam (${res.status})`);
+  return res.json(); // { clientId, name }
+}
+
+export function pingJam(roomId, clientId) {
+  return fetch(`${API_BASE}/jam/${roomId}/ping`, {
+    method: 'POST',
+    headers: { ...API_HEADERS, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ clientId }),
+  }).catch(() => {}); // heartbeat - a dropped one just means the next one is a bit late
+}
+
+// Fire-and-forget via sendBeacon so it still fires as the tab is closing.
+export function leaveJamBeacon(roomId, clientId) {
+  try {
+    navigator.sendBeacon(
+      `${API_BASE}/jam/${roomId}/leave`,
+      new Blob([JSON.stringify({ clientId })], { type: 'application/json' })
+    );
+  } catch { /* best-effort only */ }
 }
 
 export async function addToJam(roomId, track) {
