@@ -209,7 +209,7 @@ export default function JamGuest({ roomId }) {
             <p className="text-[11px] text-muted uppercase tracking-wide mb-1.5">
               Queue · {queueList.length} {queueList.length === 1 ? 'song' : 'songs'} · drag to reorder
             </p>
-            <div ref={listElRef} className="flex flex-col gap-1.5 max-h-[38vh] overflow-y-auto no-scrollbar">
+            <div ref={listElRef} className="flex flex-col gap-1.5 max-h-[152px] overflow-y-auto no-scrollbar">
               {queueList.map((entry) => {
                 const mine = entry.clientId === clientIdRef.current;
                 const dragging = dragId === entry.track.id;

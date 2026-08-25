@@ -42,6 +42,18 @@ export const DownloadIcon = (p) => (
 export const DownloadedIcon = (p) => (
   <S {...p}><circle cx="12" cy="12" r="9" /><path d="m8 12 3 3 5-6" /></S>
 );
+export const SkipNextIcon = (p) => (
+  <S {...p} fill="currentColor" stroke="none">
+    <path d="M6 5.5v13a1 1 0 0 0 1.5.87L17 12.87a1 1 0 0 0 0-1.74L7.5 4.63A1 1 0 0 0 6 5.5Z" />
+    <rect x="17" y="5" width="2" height="14" rx="0.5" />
+  </S>
+);
+export const SkipPrevIcon = (p) => (
+  <S {...p} fill="currentColor" stroke="none">
+    <path d="M18 5.5v13a1 1 0 0 1-1.5.87L7 12.87a1 1 0 0 1 0-1.74l9.5-6.5A1 1 0 0 1 18 5.5Z" />
+    <rect x="5" y="5" width="2" height="14" rx="0.5" />
+  </S>
+);
 export const Back15 = (p) => (
   <S {...p}><path d="M11 4 4 9l7 5V4Z" fill="currentColor" stroke="none" /><text x="13.5" y="16" fontSize="8" fill="currentColor" stroke="none" fontWeight="700">15</text></S>
 );
