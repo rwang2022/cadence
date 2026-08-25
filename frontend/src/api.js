@@ -59,6 +59,15 @@ export function pingJam(roomId, clientId) {
   }).catch(() => {}); // heartbeat - a dropped one just means the next one is a bit late
 }
 
+// Host pushes what's currently loaded/playing; guests read it back via getJam.
+export function setJamNowPlaying(roomId, track, isPlaying) {
+  return fetch(`${API_BASE}/jam/${roomId}/now-playing`, {
+    method: 'POST',
+    headers: { ...API_HEADERS, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ track, isPlaying }),
+  }).catch(() => {});
+}
+
 // Fire-and-forget via sendBeacon so it still fires as the tab is closing.
 export function leaveJamBeacon(roomId, clientId) {
   try {
@@ -69,11 +78,13 @@ export function leaveJamBeacon(roomId, clientId) {
   } catch { /* best-effort only */ }
 }
 
-export async function addToJam(roomId, track) {
+// clientId is optional - pass it (as a guest) so you can later remove your
+// own submission; the host doesn't need to pass one.
+export async function addToJam(roomId, track, clientId) {
   const res = await fetch(`${API_BASE}/jam/${roomId}/add`, {
     method: 'POST',
     headers: { ...API_HEADERS, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ track }),
+    body: JSON.stringify({ track, clientId }),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -82,12 +93,18 @@ export async function addToJam(roomId, track) {
   return res.json(); // { queue }
 }
 
-export async function removeJamEntry(roomId, entryId) {
+// clientId is optional. Omitted (host): removes/accepts any entry. Passed
+// (guest): only succeeds against an entry that guest themselves added.
+export async function removeJamEntry(roomId, entryId, clientId) {
   const res = await fetch(`${API_BASE}/jam/${roomId}/entry/${entryId}`, {
     method: 'DELETE',
-    headers: API_HEADERS,
+    headers: { ...API_HEADERS, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ clientId }),
   });
-  if (!res.ok) throw new Error(`Couldn't update Jam (${res.status})`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Couldn't update Jam (${res.status})`);
+  }
   return res.json(); // { queue }
 }
 

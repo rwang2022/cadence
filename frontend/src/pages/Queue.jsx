@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { usePlayer } from '../context/PlayerContext.jsx';
 import { fmtTime } from '../lib/format.js';
-import { createJam, getJam, removeJamEntry, endJam } from '../api.js';
+import { createJam, getJam, removeJamEntry, endJam, setJamNowPlaying } from '../api.js';
 import { loadJamRoom, saveJamRoom } from '../lib/storage.js';
 import { emojiFor } from '../lib/animals.js';
 import { TrashIcon, QueueIcon, DragIcon, PlusIcon } from '../components/Icons.jsx';
@@ -10,7 +10,7 @@ const JAM_POLL_MS = 4000;
 
 export default function Queue() {
   const {
-    queue, current, playTrack, preload, removeFromQueue, reorderQueue, clearQueue,
+    queue, current, isPlaying, playTrack, preload, removeFromQueue, reorderQueue, clearQueue,
     addToQueue,
   } = usePlayer();
 
@@ -44,6 +44,13 @@ export default function Queue() {
     const id = setInterval(poll, JAM_POLL_MS);
     return () => { cancelled = true; clearInterval(id); };
   }, [jamRoomId]);
+
+  // Push what's playing to the room whenever it changes, so guests can show
+  // a live "Now Playing" readout (no audio actually streams to them).
+  useEffect(() => {
+    if (!jamRoomId) return;
+    setJamNowPlaying(jamRoomId, current, isPlaying);
+  }, [jamRoomId, current, isPlaying]);
 
   const jamUrl = jamRoomId ? `${window.location.origin}/jam/${jamRoomId}` : null;
 
@@ -208,14 +215,14 @@ export default function Queue() {
                     </div>
                     <button
                       onClick={() => dismissJamEntry(entry)}
-                      className="grid place-items-center w-8 h-8 text-muted active:text-white shrink-0"
+                      className="grid place-items-center w-9 h-9 text-muted active:text-white shrink-0"
                       title="Dismiss"
                     >
                       <TrashIcon size={16} />
                     </button>
                     <button
                       onClick={() => acceptJamEntry(entry)}
-                      className="grid place-items-center w-8 h-8 rounded-full bg-accent text-white active:scale-90 transition shrink-0"
+                      className="grid place-items-center w-9 h-9 rounded-full bg-accent text-white active:scale-90 transition shrink-0"
                       title="Add to queue"
                     >
                       <PlusIcon size={16} />

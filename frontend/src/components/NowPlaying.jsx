@@ -20,7 +20,7 @@ export default function NowPlaying() {
 
   return (
     <div
-      className={`fixed inset-0 z-50 flex flex-col bg-gradient-to-b from-[#1a1320] via-bg to-bg transition-transform duration-300 safe-top safe-bottom ${
+      className={`fixed top-0 bottom-0 left-0 right-0 sm:left-1/2 sm:right-auto sm:-ml-[220px] sm:w-[440px] z-50 flex flex-col bg-gradient-to-b from-[#1a1320] via-bg to-bg transition-transform duration-300 safe-top safe-bottom sm:rounded-[28px] sm:border sm:border-white/10 sm:shadow-2xl sm:shadow-black/60 overflow-hidden ${
         showNowPlaying ? 'translate-y-0' : 'translate-y-full pointer-events-none'
       }`}
     >

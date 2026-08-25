@@ -12,12 +12,15 @@
  *   Jam (shared queue via link) - rooms live in memory only, gone on restart:
  *   POST   /jam/create             -> { roomId }
  *   GET    /jam/:roomId            -> { queue, guests: [name, ...] } | 404
- *   POST   /jam/:roomId/add        -> body { track } -> { queue }
- *   DELETE /jam/:roomId/entry/:id  -> host dismisses/accepts one entry -> { queue }
+ *   POST   /jam/:roomId/add        -> body { track, clientId? } -> { queue }
+ *   DELETE /jam/:roomId/entry/:id  -> body { clientId? } -> { queue }
+ *                                     (host: no clientId, removes anything;
+ *                                      guest: clientId, only their own entry)
  *   DELETE /jam/:roomId            -> host ends the Jam
  *   POST   /jam/:roomId/join       -> body { clientId? } -> { clientId, name }
  *   POST   /jam/:roomId/ping       -> body { clientId } -> { ok } (heartbeat)
  *   POST   /jam/:roomId/leave      -> body { clientId } -> { ok } (sendBeacon on close)
+ *   POST   /jam/:roomId/now-playing -> body { track, isPlaying } -> { ok } (host pushes; guests read it via GET)
  */
 
 const express = require('express');
@@ -302,7 +305,7 @@ function sanitizeTrack(track) {
 
 app.post('/jam/create', (_req, res) => {
   const roomId = newId(6);
-  jamRooms.set(roomId, { queue: [], guests: new Map(), createdAt: Date.now() });
+  jamRooms.set(roomId, { queue: [], guests: new Map(), nowPlaying: null, createdAt: Date.now() });
   res.json({ roomId });
 });
 
@@ -310,7 +313,21 @@ app.get('/jam/:roomId', (req, res) => {
   const room = jamRooms.get(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Jam not found (it may have ended)' });
   pruneGuests(room);
-  res.json({ queue: room.queue, guests: [...room.guests.values()].map((g) => g.name) });
+  res.json({
+    queue: room.queue,
+    guests: [...room.guests.values()].map((g) => g.name),
+    nowPlaying: room.nowPlaying,
+  });
+});
+
+// Host pushes what's currently loaded/playing so guests can show a live
+// "Now Playing" readout. No position/seek tracking - just track + play state.
+app.post('/jam/:roomId/now-playing', (req, res) => {
+  const room = jamRooms.get(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Jam not found (it may have ended)' });
+  const track = sanitizeTrack(req.body?.track);
+  room.nowPlaying = track ? { track, isPlaying: !!req.body?.isPlaying, updatedAt: Date.now() } : null;
+  res.json({ ok: true });
 });
 
 // A guest calls this once on opening the link. clientId is a random id the
@@ -362,14 +379,28 @@ app.post('/jam/:roomId/add', (req, res) => {
     return res.status(429).json({ error: 'This Jam queue is full for now' });
   }
 
-  const entry = { entryId: newId(8), track, addedAt: Date.now() };
+  // clientId is optional and only used so a guest can later remove their own
+  // submission (see DELETE below) - it doesn't gate adding.
+  const clientId = String(req.body?.clientId || '') || null;
+  const entry = { entryId: newId(8), track, addedAt: Date.now(), clientId };
   room.queue.push(entry);
   res.json({ queue: room.queue });
 });
 
+// The host calls this with no clientId (can remove/accept anything). A guest
+// calls it with their own clientId, which only succeeds against an entry
+// they themselves added - so one guest can't clear another's suggestions.
 app.delete('/jam/:roomId/entry/:entryId', (req, res) => {
   const room = jamRooms.get(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Jam not found (it may have ended)' });
+
+  const requesterClientId = req.body?.clientId || null;
+  if (requesterClientId) {
+    const entry = room.queue.find((e) => e.entryId === req.params.entryId);
+    if (entry && entry.clientId !== requesterClientId) {
+      return res.status(403).json({ error: 'You can only remove songs you added' });
+    }
+  }
   room.queue = room.queue.filter((e) => e.entryId !== req.params.entryId);
   res.json({ queue: room.queue });
 });
