@@ -1,8 +1,13 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App.jsx';
+import JamGuest from './pages/JamGuest.jsx';
 import { PlayerProvider } from './context/PlayerContext.jsx';
 import './index.css';
+
+// No router library - the only non-root route is a Jam share link
+// (/jam/:roomId), which renders a standalone guest page with no player.
+const jamMatch = window.location.pathname.match(/^\/jam\/([a-z0-9]+)\/?$/i);
 
 // Register the service worker (manual registration; see vite.config injectRegister:false)
 //
@@ -55,8 +60,12 @@ if ('serviceWorker' in navigator) {
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <PlayerProvider>
-      <App />
-    </PlayerProvider>
+    {jamMatch ? (
+      <JamGuest roomId={jamMatch[1]} />
+    ) : (
+      <PlayerProvider>
+        <App />
+      </PlayerProvider>
+    )}
   </React.StrictMode>
 );

@@ -8,6 +8,13 @@
  *   GET /info/:videoId      -> metadata for a single video
  *   GET /stream/:videoId    -> audio/mpeg stream (cached to disk, supports range/seek)
  *   GET /health             -> { ok: true }
+ *
+ *   Jam (shared queue via link) - rooms live in memory only, gone on restart:
+ *   POST   /jam/create             -> { roomId }
+ *   GET    /jam/:roomId            -> { queue } | 404
+ *   POST   /jam/:roomId/add        -> body { track } -> { queue }
+ *   DELETE /jam/:roomId/entry/:id  -> host dismisses/accepts one entry -> { queue }
+ *   DELETE /jam/:roomId            -> host ends the Jam
  */
 
 const express = require('express');
@@ -29,6 +36,7 @@ const app = express();
 // seeking works (the frontend reads them via the service worker).
 app.use(cors({ exposedHeaders: ['Content-Range', 'Accept-Ranges', 'Content-Length', 'Content-Type'] }));
 app.disable('x-powered-by');
+app.use(express.json({ limit: '16kb' }));
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -224,6 +232,82 @@ app.get('/stream/:videoId', async (req, res) => {
     console.error('stream failed:', err.message);
     if (!res.headersSent) res.status(500).json({ error: 'Stream failed', detail: err.message });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Jam: a shareable link that lets other people queue songs into a room, which
+// the host reviews on the Queue page and pulls into their real queue. Rooms
+// are in-memory only (fine for a personal, single-instance app) and expire
+// after ROOM_TTL_MS so a stale link/room can't grow forever.
+// ---------------------------------------------------------------------------
+const ROOM_TTL_MS = 12 * 60 * 60 * 1000; // 12h
+const ROOM_MAX_QUEUE = 100; // cap pending (not-yet-reviewed) entries per room
+const jamRooms = new Map(); // roomId -> { queue: [{entryId, track, addedAt}], createdAt }
+
+function newId(len) {
+  return Array.from({ length: len }, () => Math.floor(Math.random() * 36).toString(36)).join('');
+}
+
+setInterval(() => {
+  const cutoff = Date.now() - ROOM_TTL_MS;
+  for (const [id, room] of jamRooms) {
+    if (room.createdAt < cutoff) jamRooms.delete(id);
+  }
+}, 30 * 60 * 1000).unref();
+
+// A guest-submitted track only needs to carry enough to show + queue it -
+// re-derive a clean object rather than trusting the request body verbatim.
+function sanitizeTrack(track) {
+  if (!track || typeof track !== 'object') return null;
+  const id = String(track.id || '');
+  if (!VIDEO_ID_RE.test(id)) return null;
+  const clip = (s, max) => String(s || '').slice(0, max);
+  return {
+    id,
+    title: clip(track.title, 200) || 'Unknown',
+    artist: clip(track.artist, 200) || 'Unknown artist',
+    duration: Number.isFinite(track.duration) ? Math.max(0, Math.round(track.duration)) : 0,
+    thumbnail: thumbFor(id),
+  };
+}
+
+app.post('/jam/create', (_req, res) => {
+  const roomId = newId(6);
+  jamRooms.set(roomId, { queue: [], createdAt: Date.now() });
+  res.json({ roomId });
+});
+
+app.get('/jam/:roomId', (req, res) => {
+  const room = jamRooms.get(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Jam not found (it may have ended)' });
+  res.json({ queue: room.queue });
+});
+
+app.post('/jam/:roomId/add', (req, res) => {
+  const room = jamRooms.get(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Jam not found (it may have ended)' });
+
+  const track = sanitizeTrack(req.body?.track);
+  if (!track) return res.status(400).json({ error: 'Invalid track' });
+  if (room.queue.length >= ROOM_MAX_QUEUE) {
+    return res.status(429).json({ error: 'This Jam queue is full for now' });
+  }
+
+  const entry = { entryId: newId(8), track, addedAt: Date.now() };
+  room.queue.push(entry);
+  res.json({ queue: room.queue });
+});
+
+app.delete('/jam/:roomId/entry/:entryId', (req, res) => {
+  const room = jamRooms.get(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Jam not found (it may have ended)' });
+  room.queue = room.queue.filter((e) => e.entryId !== req.params.entryId);
+  res.json({ queue: room.queue });
+});
+
+app.delete('/jam/:roomId', (req, res) => {
+  jamRooms.delete(req.params.roomId);
+  res.json({ ok: true });
 });
 
 // ---------------------------------------------------------------------------

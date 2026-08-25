@@ -1,12 +1,94 @@
 import { useEffect, useRef, useState } from 'react';
 import { usePlayer } from '../context/PlayerContext.jsx';
 import { fmtTime } from '../lib/format.js';
-import { TrashIcon, QueueIcon, DragIcon } from '../components/Icons.jsx';
+import { createJam, getJam, removeJamEntry, endJam } from '../api.js';
+import { loadJamRoom, saveJamRoom } from '../lib/storage.js';
+import { TrashIcon, QueueIcon, DragIcon, PlusIcon } from '../components/Icons.jsx';
+
+const JAM_POLL_MS = 4000;
 
 export default function Queue() {
   const {
     queue, current, playTrack, preload, removeFromQueue, reorderQueue, clearQueue,
+    addToQueue,
   } = usePlayer();
+
+  // ---- Jam: shared queue via link -------------------------------------
+  const [jamRoomId, setJamRoomId] = useState(() => loadJamRoom());
+  const [jamQueue, setJamQueue] = useState([]);
+  const [jamStarting, setJamStarting] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!jamRoomId) { setJamQueue([]); return; }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const room = await getJam(jamRoomId);
+        if (cancelled) return;
+        if (!room) {
+          // Room expired or was ended elsewhere - drop it locally too.
+          setJamRoomId(null);
+          saveJamRoom(null);
+          return;
+        }
+        setJamQueue(room.queue);
+      } catch {
+        /* transient network hiccup - next poll will retry */
+      }
+    };
+    poll();
+    const id = setInterval(poll, JAM_POLL_MS);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [jamRoomId]);
+
+  const jamUrl = jamRoomId ? `${window.location.origin}/jam/${jamRoomId}` : null;
+
+  const startJam = async () => {
+    setJamStarting(true);
+    try {
+      const { roomId } = await createJam();
+      setJamRoomId(roomId);
+      saveJamRoom(roomId);
+    } catch (e) {
+      alert(`Couldn't start Jam:\n${e.message}`);
+    } finally {
+      setJamStarting(false);
+    }
+  };
+
+  const shareJamLink = async () => {
+    if (!jamUrl) return;
+    if (navigator.share) {
+      try { await navigator.share({ title: 'Cadence Jam', url: jamUrl }); return; } catch { /* cancelled - fall through to copy */ }
+    }
+    try {
+      await navigator.clipboard.writeText(jamUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      alert(jamUrl);
+    }
+  };
+
+  const endJamNow = async () => {
+    const id = jamRoomId;
+    setJamRoomId(null);
+    saveJamRoom(null);
+    setJamQueue([]);
+    if (id) endJam(id).catch(() => {});
+  };
+
+  const acceptJamEntry = async (entry) => {
+    addToQueue(entry.track);
+    setJamQueue((q) => q.filter((e) => e.entryId !== entry.entryId));
+    if (jamRoomId) removeJamEntry(jamRoomId, entry.entryId).catch(() => {});
+  };
+
+  const dismissJamEntry = async (entry) => {
+    setJamQueue((q) => q.filter((e) => e.entryId !== entry.entryId));
+    if (jamRoomId) removeJamEntry(jamRoomId, entry.entryId).catch(() => {});
+  };
 
   const listRef = useRef(null);
   const queueRef = useRef(queue);
@@ -69,6 +151,62 @@ export default function Queue() {
           <button onClick={clearQueue} className="text-sm text-muted active:text-white">
             Clear
           </button>
+        )}
+      </div>
+
+      <div className="px-4 pb-3">
+        {!jamRoomId ? (
+          <button
+            onClick={startJam}
+            disabled={jamStarting}
+            className="w-full rounded-xl bg-surface2 px-4 py-2.5 text-[14px] text-white active:scale-[0.99] transition disabled:opacity-60"
+          >
+            {jamStarting ? 'Starting…' : '🎉 Start a Jam — share a link, friends add songs'}
+          </button>
+        ) : (
+          <div className="rounded-xl bg-surface2 px-4 py-3">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[14px] text-white truncate">
+                Jam is live{jamQueue.length > 0 ? ` · ${jamQueue.length} waiting` : ''}
+              </p>
+              <div className="flex items-center gap-2 shrink-0">
+                <button onClick={shareJamLink} className="rounded-full bg-accent text-white px-3.5 py-1.5 text-[13px] active:scale-95 transition">
+                  {copied ? 'Copied!' : 'Share link'}
+                </button>
+                <button onClick={endJamNow} className="text-[13px] text-muted active:text-white">
+                  End
+                </button>
+              </div>
+            </div>
+
+            {jamQueue.length > 0 && (
+              <div className="mt-2.5 flex flex-col gap-2">
+                {jamQueue.map((entry) => (
+                  <div key={entry.entryId} className="flex items-center gap-2.5">
+                    <img src={entry.track.thumbnail} alt="" className="w-9 h-9 rounded-lg object-cover shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[13px] text-white">{entry.track.title}</p>
+                      <p className="truncate text-[12px] text-muted">{entry.track.artist}</p>
+                    </div>
+                    <button
+                      onClick={() => dismissJamEntry(entry)}
+                      className="grid place-items-center w-8 h-8 text-muted active:text-white shrink-0"
+                      title="Dismiss"
+                    >
+                      <TrashIcon size={16} />
+                    </button>
+                    <button
+                      onClick={() => acceptJamEntry(entry)}
+                      className="grid place-items-center w-8 h-8 rounded-full bg-accent text-white active:scale-90 transition shrink-0"
+                      title="Add to queue"
+                    >
+                      <PlusIcon size={16} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         )}
       </div>
 
