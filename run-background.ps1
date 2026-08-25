@@ -166,6 +166,28 @@ Log "  'Cadence Maintenance' registered (re-runs this script every $IntervalDays
 Log "Restarting backend + tunnel now..."
 Stop-ScheduledTask -TaskName "Cadence Backend" -ErrorAction SilentlyContinue
 Stop-ScheduledTask -TaskName "Cadence Tunnel"  -ErrorAction SilentlyContinue
+
+# Stop-ScheduledTask only signals the task; it doesn't reliably kill node/ngrok
+# processes left behind by a crash or a manual run outside the task, which then
+# hold the port/tunnel open and make the freshly-started task fail silently.
+# Find and kill any such leftovers by command line before restarting.
+function Stop-OrphanedProcess([string]$ProcessName, [string]$CommandLineMatch, [int]$TimeoutSec = 10) {
+  $procs = Get-CimInstance Win32_Process -Filter "Name = '$ProcessName'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and $_.CommandLine -match [regex]::Escape($CommandLineMatch) }
+  foreach ($p in $procs) {
+    Log "  Stopping orphaned $ProcessName (PID $($p.ProcessId)): $($p.CommandLine)"
+    Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+  }
+  if ($procs) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline -and ($procs | Where-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue })) {
+      Start-Sleep -Milliseconds 500
+    }
+  }
+}
+Stop-OrphanedProcess -ProcessName "node.exe"  -CommandLineMatch "server.js"
+Stop-OrphanedProcess -ProcessName "ngrok.exe" -CommandLineMatch $Domain
+
 Start-Sleep -Seconds 1
 Start-ScheduledTask -TaskName "Cadence Backend"
 Start-Sleep -Seconds 2
