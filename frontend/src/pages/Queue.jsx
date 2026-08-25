@@ -1,28 +1,37 @@
 import { useEffect, useRef, useState } from 'react';
 import { usePlayer } from '../context/PlayerContext.jsx';
 import { fmtTime } from '../lib/format.js';
-import { createJam, getJam, removeJamEntry, endJam, setJamNowPlaying } from '../api.js';
-import { loadJamRoom, saveJamRoom } from '../lib/storage.js';
+import { createJam, getJam, endJam, setJamNowPlaying } from '../api.js';
 import { emojiFor } from '../lib/animals.js';
-import { TrashIcon, QueueIcon, DragIcon, PlusIcon } from '../components/Icons.jsx';
+import { TrashIcon, QueueIcon, DragIcon } from '../components/Icons.jsx';
 
 const JAM_POLL_MS = 4000;
 
 export default function Queue() {
   const {
     queue, current, isPlaying, playTrack, preload, removeFromQueue, reorderQueue, clearQueue,
-    addToQueue,
+    jamRoomId, setJamRoomId, replaceQueueFromRemote,
   } = usePlayer();
 
-  // ---- Jam: shared queue via link -------------------------------------
-  const [jamRoomId, setJamRoomId] = useState(() => loadJamRoom());
-  const [jamQueue, setJamQueue] = useState([]);
+  const listRef = useRef(null);
+  const queueRef = useRef(queue);
+  useEffect(() => { queueRef.current = queue; }, [queue]);
+
+  const [dragId, setDragId] = useState(null);
+  const drag = useRef(null);          // { id, moved }
+  const suppressClick = useRef(false); // ignore the click that ends a drag
+
+  // ---- Jam: shared live queue via link ---------------------------------
   const [jamGuests, setJamGuests] = useState([]); // animal names currently active
   const [jamStarting, setJamStarting] = useState(false);
   const [copied, setCopied] = useState(false);
 
+  // The room's queue IS the shared queue now - no approval step. Every song
+  // add/remove/reorder (from here, Search, or a guest) goes straight to the
+  // room, and this poll pulls the current state back in so everyone (incl.
+  // this device) converges on the same order.
   useEffect(() => {
-    if (!jamRoomId) { setJamQueue([]); setJamGuests([]); return; }
+    if (!jamRoomId) { setJamGuests([]); return; }
     let cancelled = false;
     const poll = async () => {
       try {
@@ -31,11 +40,18 @@ export default function Queue() {
         if (!room) {
           // Room expired or was ended elsewhere - drop it locally too.
           setJamRoomId(null);
-          saveJamRoom(null);
           return;
         }
-        setJamQueue(room.queue);
         setJamGuests(room.guests || []);
+        // Don't stomp an in-progress local drag with a stale server snapshot,
+        // and skip the update entirely if nothing actually changed.
+        if (!drag.current) {
+          const remoteIds = JSON.stringify(room.queue.map((e) => e.track.id));
+          const localIds = JSON.stringify(queueRef.current.map((t) => t.id));
+          if (remoteIds !== localIds) {
+            replaceQueueFromRemote(room.queue.map((e) => e.track));
+          }
+        }
       } catch {
         /* transient network hiccup - next poll will retry */
       }
@@ -43,7 +59,7 @@ export default function Queue() {
     poll();
     const id = setInterval(poll, JAM_POLL_MS);
     return () => { cancelled = true; clearInterval(id); };
-  }, [jamRoomId]);
+  }, [jamRoomId, setJamRoomId, replaceQueueFromRemote]);
 
   // Push what's playing to the room whenever it changes, so guests can show
   // a live "Now Playing" readout (no audio actually streams to them).
@@ -59,7 +75,6 @@ export default function Queue() {
     try {
       const { roomId } = await createJam();
       setJamRoomId(roomId);
-      saveJamRoom(roomId);
     } catch (e) {
       alert(`Couldn't start Jam:\n${e.message}`);
     } finally {
@@ -84,29 +99,8 @@ export default function Queue() {
   const endJamNow = async () => {
     const id = jamRoomId;
     setJamRoomId(null);
-    saveJamRoom(null);
-    setJamQueue([]);
     if (id) endJam(id).catch(() => {});
   };
-
-  const acceptJamEntry = async (entry) => {
-    addToQueue(entry.track);
-    setJamQueue((q) => q.filter((e) => e.entryId !== entry.entryId));
-    if (jamRoomId) removeJamEntry(jamRoomId, entry.entryId).catch(() => {});
-  };
-
-  const dismissJamEntry = async (entry) => {
-    setJamQueue((q) => q.filter((e) => e.entryId !== entry.entryId));
-    if (jamRoomId) removeJamEntry(jamRoomId, entry.entryId).catch(() => {});
-  };
-
-  const listRef = useRef(null);
-  const queueRef = useRef(queue);
-  useEffect(() => { queueRef.current = queue; }, [queue]);
-
-  const [dragId, setDragId] = useState(null);
-  const drag = useRef(null);          // { id, moved }
-  const suppressClick = useRef(false); // ignore the click that ends a drag
 
   // Pointer-based reordering: swap with a neighbour as the finger crosses its
   // midpoint. Works with both mouse and touch (iOS/PWA). Defined once per drag
@@ -171,14 +165,12 @@ export default function Queue() {
             disabled={jamStarting}
             className="w-full rounded-xl bg-surface2 px-4 py-2.5 text-[14px] text-white active:scale-[0.99] transition disabled:opacity-60"
           >
-            {jamStarting ? 'Starting…' : '🎉 Start a Jam — share a link, friends add songs'}
+            {jamStarting ? 'Starting…' : '🎉 Start a Jam — share a link, friends add & reorder songs'}
           </button>
         ) : (
           <div className="rounded-xl bg-surface2 px-4 py-3">
             <div className="flex items-center justify-between gap-2">
-              <p className="text-[14px] text-white truncate">
-                Jam is live{jamQueue.length > 0 ? ` · ${jamQueue.length} waiting` : ''}
-              </p>
+              <p className="text-[14px] text-white truncate">Jam is live</p>
               <div className="flex items-center gap-2 shrink-0">
                 <button onClick={shareJamLink} className="rounded-full bg-accent text-white px-3.5 py-1.5 text-[13px] active:scale-95 transition">
                   {copied ? 'Copied!' : 'Share link'}
@@ -203,34 +195,6 @@ export default function Queue() {
                 </>
               )}
             </p>
-
-            {jamQueue.length > 0 && (
-              <div className="mt-2.5 flex flex-col gap-2">
-                {jamQueue.map((entry) => (
-                  <div key={entry.entryId} className="flex items-center gap-2.5">
-                    <img src={entry.track.thumbnail} alt="" className="w-9 h-9 rounded-lg object-cover shrink-0" />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-[13px] text-white">{entry.track.title}</p>
-                      <p className="truncate text-[12px] text-muted">{entry.track.artist}</p>
-                    </div>
-                    <button
-                      onClick={() => dismissJamEntry(entry)}
-                      className="grid place-items-center w-9 h-9 text-muted active:text-white shrink-0"
-                      title="Dismiss"
-                    >
-                      <TrashIcon size={16} />
-                    </button>
-                    <button
-                      onClick={() => acceptJamEntry(entry)}
-                      className="grid place-items-center w-9 h-9 rounded-full bg-accent text-white active:scale-90 transition shrink-0"
-                      title="Add to queue"
-                    >
-                      <PlusIcon size={16} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         )}
       </div>
@@ -239,7 +203,11 @@ export default function Queue() {
         {queue.length === 0 ? (
           <div className="flex flex-col items-center justify-center text-muted gap-3 pt-24 px-8 text-center">
             <QueueIcon size={48} className="opacity-40" />
-            <p>Your queue is empty. Add songs from Search with the + button.</p>
+            <p>
+              {jamRoomId
+                ? 'Queue is empty. Add songs from Search, or share the Jam link so friends can add their own.'
+                : 'Your queue is empty. Add songs from Search with the + button.'}
+            </p>
           </div>
         ) : (
           queue.map((t) => {

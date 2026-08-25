@@ -36,7 +36,7 @@ export async function getJam(roomId, signal) {
   const res = await fetch(`${API_BASE}/jam/${roomId}`, { signal, headers: API_HEADERS });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Jam lookup failed (${res.status})`);
-  return res.json(); // { queue: [{ entryId, track, addedAt }], guests: [name, ...] }
+  return res.json(); // { queue: [{ track, addedAt, clientId }], guests: [name, ...], nowPlaying }
 }
 
 // Returns null (not thrown) for a 404 so a dead link can show "ended" cleanly.
@@ -79,7 +79,8 @@ export function leaveJamBeacon(roomId, clientId) {
 }
 
 // clientId is optional - pass it (as a guest) so you can later remove your
-// own submission; the host doesn't need to pass one.
+// own addition; the host doesn't need to pass one. Adds straight to the live
+// shared queue, no approval step.
 export async function addToJam(roomId, track, clientId) {
   const res = await fetch(`${API_BASE}/jam/${roomId}/add`, {
     method: 'POST',
@@ -93,17 +94,27 @@ export async function addToJam(roomId, track, clientId) {
   return res.json(); // { queue }
 }
 
-// clientId is optional. Omitted (host): removes/accepts any entry. Passed
-// (guest): only succeeds against an entry that guest themselves added.
-export async function removeJamEntry(roomId, entryId, clientId) {
-  const res = await fetch(`${API_BASE}/jam/${roomId}/entry/${entryId}`, {
+// Moves one song (by video id) to a new index. Anyone can call this - no
+// clientId/ownership check, reordering is non-destructive.
+export function reorderJam(roomId, id, toIndex) {
+  return fetch(`${API_BASE}/jam/${roomId}/reorder`, {
+    method: 'POST',
+    headers: { ...API_HEADERS, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, toIndex }),
+  }).catch(() => {}); // best-effort - next poll reconciles either way
+}
+
+// clientId is optional. Omitted (host): removes anything. Passed (guest):
+// only succeeds against a song that guest themselves added.
+export async function removeJamSong(roomId, videoId, clientId) {
+  const res = await fetch(`${API_BASE}/jam/${roomId}/song/${videoId}`, {
     method: 'DELETE',
     headers: { ...API_HEADERS, 'Content-Type': 'application/json' },
     body: JSON.stringify({ clientId }),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `Couldn't update Jam (${res.status})`);
+    throw new Error(body.error || `Couldn't update the queue (${res.status})`);
   }
   return res.json(); // { queue }
 }

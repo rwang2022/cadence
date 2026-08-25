@@ -9,17 +9,20 @@
  *   GET /stream/:videoId    -> audio/mpeg stream (cached to disk, supports range/seek)
  *   GET /health             -> { ok: true }
  *
- *   Jam (shared queue via link) - rooms live in memory only, gone on restart:
- *   POST   /jam/create             -> { roomId }
- *   GET    /jam/:roomId            -> { queue, guests: [name, ...] } | 404
- *   POST   /jam/:roomId/add        -> body { track, clientId? } -> { queue }
- *   DELETE /jam/:roomId/entry/:id  -> body { clientId? } -> { queue }
- *                                     (host: no clientId, removes anything;
- *                                      guest: clientId, only their own entry)
- *   DELETE /jam/:roomId            -> host ends the Jam
- *   POST   /jam/:roomId/join       -> body { clientId? } -> { clientId, name }
- *   POST   /jam/:roomId/ping       -> body { clientId } -> { ok } (heartbeat)
- *   POST   /jam/:roomId/leave      -> body { clientId } -> { ok } (sendBeacon on close)
+ *   Jam (shared live queue via link) - rooms live in memory only, gone on
+ *   restart. The room's queue IS the shared queue - no approval step, and
+ *   the host's app stays synced to it same as guests do.
+ *   POST   /jam/create              -> { roomId }
+ *   GET    /jam/:roomId             -> { queue, guests: [name, ...], nowPlaying } | 404
+ *   POST   /jam/:roomId/add         -> body { track, clientId? } -> { queue }
+ *   POST   /jam/:roomId/reorder     -> body { id, toIndex } -> { queue } (anyone)
+ *   DELETE /jam/:roomId/song/:id    -> body { clientId? } -> { queue }
+ *                                      (host: no clientId, removes anything;
+ *                                       guest: clientId, only their own addition)
+ *   DELETE /jam/:roomId             -> host ends the Jam
+ *   POST   /jam/:roomId/join        -> body { clientId? } -> { clientId, name }
+ *   POST   /jam/:roomId/ping        -> body { clientId } -> { ok } (heartbeat)
+ *   POST   /jam/:roomId/leave       -> body { clientId } -> { ok } (sendBeacon on close)
  *   POST   /jam/:roomId/now-playing -> body { track, isPlaying } -> { ok } (host pushes; guests read it via GET)
  */
 
@@ -241,13 +244,14 @@ app.get('/stream/:videoId', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Jam: a shareable link that lets other people queue songs into a room, which
-// the host reviews on the Queue page and pulls into their real queue. Rooms
-// are in-memory only (fine for a personal, single-instance app) and expire
-// after ROOM_TTL_MS so a stale link/room can't grow forever.
+// Jam: a shareable link that lets other people queue songs into a room. The
+// room's queue IS the live shared queue - the host's app stays synced to it
+// (poll-based, no approval step), and it's what guests see too. Rooms are
+// in-memory only (fine for a personal, single-instance app) and expire after
+// ROOM_TTL_MS so a stale link/room can't grow forever.
 // ---------------------------------------------------------------------------
 const ROOM_TTL_MS = 12 * 60 * 60 * 1000; // 12h
-const ROOM_MAX_QUEUE = 100; // cap pending (not-yet-reviewed) entries per room
+const ROOM_MAX_QUEUE = 200; // cap songs per room's queue
 const GUEST_TIMEOUT_MS = 15 * 1000; // no heartbeat in this long = considered gone
 // Keep in sync with frontend/src/lib/animals.js (name -> emoji map).
 const JAM_ANIMALS = [
@@ -369,39 +373,61 @@ app.post('/jam/:roomId/leave', (req, res) => {
   res.json({ ok: true });
 });
 
+// Adds straight to the live shared queue - no host approval step. Songs are
+// deduped by video id, same as the app's local queue already dedupes.
 app.post('/jam/:roomId/add', (req, res) => {
   const room = jamRooms.get(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Jam not found (it may have ended)' });
 
   const track = sanitizeTrack(req.body?.track);
   if (!track) return res.status(400).json({ error: 'Invalid track' });
+  if (room.queue.some((e) => e.track.id === track.id)) {
+    return res.json({ queue: room.queue }); // already queued - no-op, not an error
+  }
   if (room.queue.length >= ROOM_MAX_QUEUE) {
-    return res.status(429).json({ error: 'This Jam queue is full for now' });
+    return res.status(429).json({ error: 'This queue is full for now' });
   }
 
   // clientId is optional and only used so a guest can later remove their own
-  // submission (see DELETE below) - it doesn't gate adding.
+  // addition (see DELETE below) - it doesn't gate adding.
   const clientId = String(req.body?.clientId || '') || null;
-  const entry = { entryId: newId(8), track, addedAt: Date.now(), clientId };
-  room.queue.push(entry);
+  room.queue.push({ track, addedAt: Date.now(), clientId });
   res.json({ queue: room.queue });
 });
 
-// The host calls this with no clientId (can remove/accept anything). A guest
-// calls it with their own clientId, which only succeeds against an entry
-// they themselves added - so one guest can't clear another's suggestions.
-app.delete('/jam/:roomId/entry/:entryId', (req, res) => {
+// Moves one song (by video id) to a new index. Anyone can reorder - it's
+// non-destructive, unlike removal, so it isn't ownership-gated.
+app.post('/jam/:roomId/reorder', (req, res) => {
+  const room = jamRooms.get(req.params.roomId);
+  if (!room) return res.status(404).json({ error: 'Jam not found (it may have ended)' });
+
+  const videoId = String(req.body?.id || '');
+  const toIndex = Number(req.body?.toIndex);
+  const fromIndex = room.queue.findIndex((e) => e.track.id === videoId);
+  if (fromIndex === -1 || !Number.isInteger(toIndex)) {
+    return res.status(400).json({ error: 'Invalid reorder' });
+  }
+  const clamped = Math.max(0, Math.min(toIndex, room.queue.length - 1));
+  const [moved] = room.queue.splice(fromIndex, 1);
+  room.queue.splice(clamped, 0, moved);
+  res.json({ queue: room.queue });
+});
+
+// The host calls this with no clientId (can remove anything). A guest calls
+// it with their own clientId, which only succeeds against a song they
+// themselves added - so one guest can't clear another's additions.
+app.delete('/jam/:roomId/song/:videoId', (req, res) => {
   const room = jamRooms.get(req.params.roomId);
   if (!room) return res.status(404).json({ error: 'Jam not found (it may have ended)' });
 
   const requesterClientId = req.body?.clientId || null;
   if (requesterClientId) {
-    const entry = room.queue.find((e) => e.entryId === req.params.entryId);
+    const entry = room.queue.find((e) => e.track.id === req.params.videoId);
     if (entry && entry.clientId !== requesterClientId) {
       return res.status(403).json({ error: 'You can only remove songs you added' });
     }
   }
-  room.queue = room.queue.filter((e) => e.entryId !== req.params.entryId);
+  room.queue = room.queue.filter((e) => e.track.id !== req.params.videoId);
   res.json({ queue: room.queue });
 });
 

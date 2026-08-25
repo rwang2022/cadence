@@ -1,10 +1,12 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { streamUrl, API_HEADERS } from '../api.js';
+import { streamUrl, API_HEADERS, addToJam, reorderJam, removeJamSong } from '../api.js';
 import {
   loadLibrary,
   saveLibrary,
   loadQueue,
   saveQueue,
+  loadJamRoom,
+  saveJamRoom,
   AUDIO_CACHE,
 } from '../lib/storage.js';
 
@@ -42,6 +44,16 @@ export function PlayerProvider({ children }) {
   const [library, setLibrary] = useState(() => loadLibrary());
   const [downloading, setDownloading] = useState({}); // id -> true while caching
   const [showNowPlaying, setShowNowPlaying] = useState(false);
+
+  // Active Jam room, if any - lives here (not just the Queue page) so that
+  // adding a song from Search/Library also syncs to the shared room.
+  const [jamRoomId, setJamRoomIdState] = useState(() => loadJamRoom());
+  const jamRoomIdRef = useRef(jamRoomId);
+  useEffect(() => { jamRoomIdRef.current = jamRoomId; }, [jamRoomId]);
+  const setJamRoomId = useCallback((id) => {
+    setJamRoomIdState(id);
+    saveJamRoom(id);
+  }, []);
 
   // keep a ref to queue/current so audio "ended" handler isn't stale
   const queueRef = useRef(queue);
@@ -174,24 +186,47 @@ export function PlayerProvider({ children }) {
   }, [audio]);
 
   // ---- queue management -----------------------------------------------------
+  // When a Jam is active, the room's queue IS the shared queue - these
+  // mirror every local change to it (fire-and-forget; the poll in Queue.jsx
+  // reconciles either way if one of these drops). Local state always updates
+  // immediately regardless, so nothing here waits on the network.
   const addToQueue = useCallback((track) => {
     setQueue((q) => (q.find((t) => t.id === track.id) ? q : [...q, track]));
+    if (jamRoomIdRef.current) addToJam(jamRoomIdRef.current, track).catch(() => {});
   }, []);
 
   const removeFromQueue = useCallback((id) => {
     setQueue((q) => q.filter((t) => t.id !== id));
+    if (jamRoomIdRef.current) removeJamSong(jamRoomIdRef.current, id).catch(() => {});
   }, []);
 
   const reorderQueue = useCallback((from, to) => {
+    const movedTrack = queueRef.current[from];
     setQueue((q) => {
       const next = [...q];
       const [moved] = next.splice(from, 1);
       next.splice(to, 0, moved);
       return next;
     });
+    if (jamRoomIdRef.current && movedTrack) {
+      reorderJam(jamRoomIdRef.current, movedTrack.id, to);
+    }
   }, []);
 
-  const clearQueue = useCallback(() => setQueue([]), []);
+  const clearQueue = useCallback(() => {
+    const ids = queueRef.current.map((t) => t.id);
+    setQueue([]);
+    if (jamRoomIdRef.current) {
+      ids.forEach((id) => removeJamSong(jamRoomIdRef.current, id).catch(() => {}));
+    }
+  }, []);
+
+  // Pulls in a remote change (e.g. a guest added/reordered/removed a song) -
+  // pure local overwrite, no server round-trip, so it can't loop with the
+  // sync calls above.
+  const replaceQueueFromRemote = useCallback((tracks) => {
+    setQueue(tracks);
+  }, []);
 
   // ---- offline downloads ----------------------------------------------------
   const isDownloaded = useCallback(
@@ -364,6 +399,7 @@ export function PlayerProvider({ children }) {
       current, isPlaying, currentTime, duration, volume, buffering,
       queue, library, downloading, showNowPlaying,
       setShowNowPlaying,
+      jamRoomId, setJamRoomId, replaceQueueFromRemote,
       preload, playTrack, togglePlay, playNext, playPrev, seek, skip, setVolume,
       addToQueue, removeFromQueue, reorderQueue, clearQueue,
       download, removeDownload, isDownloaded, toggleTag,
@@ -371,6 +407,7 @@ export function PlayerProvider({ children }) {
     [
       current, isPlaying, currentTime, duration, volume, buffering,
       queue, library, downloading, showNowPlaying,
+      jamRoomId, setJamRoomId, replaceQueueFromRemote,
       preload, playTrack, togglePlay, playNext, playPrev, seek, skip, setVolume,
       addToQueue, removeFromQueue, reorderQueue, clearQueue,
       download, removeDownload, isDownloaded,

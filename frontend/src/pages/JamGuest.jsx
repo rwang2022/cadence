@@ -1,29 +1,35 @@
 import { useEffect, useRef, useState } from 'react';
-import { search, addToJam, removeJamEntry, joinJam, pingJam, leaveJamBeacon, getJam } from '../api.js';
-import { SearchIcon, MusicIcon, PlusIcon, CheckIcon, TrashIcon } from '../components/Icons.jsx';
+import { search, addToJam, removeJamSong, reorderJam, joinJam, pingJam, leaveJamBeacon, getJam } from '../api.js';
+import { SearchIcon, MusicIcon, PlusIcon, CheckIcon, TrashIcon, DragIcon } from '../components/Icons.jsx';
 import { fmtTime } from '../lib/format.js';
 import { getOrCreateGuestId } from '../lib/storage.js';
 import { emojiFor } from '../lib/animals.js';
 
 const HEARTBEAT_MS = 5000;
-const NOW_PLAYING_POLL_MS = 4000;
+const POLL_MS = 4000;
 
 // Minimal, standalone page opened via a Jam share link. Deliberately has no
-// player, library, or download UI - just search + add to the host's Jam
-// queue, and a read-only "Now Playing" readout. Does not use PlayerContext
-// at all - no audio ever plays on this page.
+// player, library, or download UI - search + add straight to the live
+// shared queue (no approval step), see + reorder that queue, and a
+// read-only "Now Playing" readout. Does not use PlayerContext at all - no
+// audio ever plays on this page.
 export default function JamGuest({ roomId }) {
   const [roomState, setRoomState] = useState('checking'); // checking | ok | gone
   const [myName, setMyName] = useState(null);
   const [nowPlaying, setNowPlaying] = useState(null);
-  const [mine, setMine] = useState([]); // this guest's own pending submissions
+  const [queueList, setQueueList] = useState([]); // [{ track, addedAt, clientId }]
   const [q, setQ] = useState('');
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [addedIds, setAddedIds] = useState(() => new Set());
   const abortRef = useRef(null);
   const clientIdRef = useRef(getOrCreateGuestId());
+
+  const queueListRef = useRef(queueList);
+  useEffect(() => { queueListRef.current = queueList; }, [queueList]);
+  const listElRef = useRef(null);
+  const [dragId, setDragId] = useState(null);
+  const dragRef = useRef(null); // { id, moved }
 
   // Join once on open (registers presence + gets our animal name), then send
   // a heartbeat so the host's guest list keeps showing us as active, and let
@@ -52,8 +58,8 @@ export default function JamGuest({ roomId }) {
     };
   }, [roomId]);
 
-  // Poll for what the host is currently playing (read-only - no audio here),
-  // and for our own pending submissions (so we can un-add one if needed).
+  // Poll for what the host is currently playing (read-only - no audio here)
+  // and the live shared queue.
   useEffect(() => {
     if (roomState !== 'ok') return;
     let cancelled = false;
@@ -63,11 +69,12 @@ export default function JamGuest({ roomId }) {
         if (cancelled) return;
         if (!room) { setRoomState('gone'); return; }
         setNowPlaying(room.nowPlaying || null);
-        setMine(room.queue.filter((e) => e.clientId === clientIdRef.current));
+        // Don't stomp an in-progress local drag with a stale snapshot.
+        if (!dragRef.current) setQueueList(room.queue);
       } catch { /* transient - next poll retries */ }
     };
     poll();
-    const id = setInterval(poll, NOW_PLAYING_POLL_MS);
+    const id = setInterval(poll, POLL_MS);
     return () => { cancelled = true; clearInterval(id); };
   }, [roomId, roomState]);
 
@@ -91,23 +98,68 @@ export default function JamGuest({ roomId }) {
   }, [q]);
 
   async function handleAdd(track) {
-    setAddedIds((s) => new Set(s).add(track.id));
+    // Optimistic, so the checkmark shows immediately.
+    setQueueList((ql) => (ql.some((e) => e.track.id === track.id)
+      ? ql
+      : [...ql, { track, addedAt: Date.now(), clientId: clientIdRef.current }]));
     try {
       const { queue } = await addToJam(roomId, track, clientIdRef.current);
-      setMine(queue.filter((e) => e.clientId === clientIdRef.current));
+      setQueueList(queue);
     } catch (e) {
-      // Roll back so the user can retry.
-      setAddedIds((s) => { const n = new Set(s); n.delete(track.id); return n; });
+      setQueueList((ql) => ql.filter((e) => e.track.id !== track.id));
       alert(`Couldn't add "${track.title}":\n${e.message}`);
     }
   }
 
-  async function handleRemoveMine(entry) {
-    setMine((m) => m.filter((e) => e.entryId !== entry.entryId));
-    setAddedIds((s) => { const n = new Set(s); n.delete(entry.track.id); return n; });
+  async function handleRemove(entry) {
+    setQueueList((ql) => ql.filter((e) => e.track.id !== entry.track.id));
     try {
-      await removeJamEntry(roomId, entry.entryId, clientIdRef.current);
+      await removeJamSong(roomId, entry.track.id, clientIdRef.current);
     } catch { /* it'll reappear on the next poll if this actually failed */ }
+  }
+
+  // Same pointer-based swap-with-neighbour reorder as the host's Queue page,
+  // just talking straight to the API instead of going through PlayerContext.
+  function startDrag(e, id) {
+    e.stopPropagation();
+    dragRef.current = { id, moved: false };
+    setDragId(id);
+
+    const onMove = (ev) => {
+      const d = dragRef.current;
+      if (!d) return;
+      d.moved = true;
+      const rows = [...(listElRef.current?.querySelectorAll('[data-row]') || [])];
+      const idx = queueListRef.current.findIndex((e) => e.track.id === d.id);
+      if (idx === -1) return;
+      const y = ev.clientY;
+      let toIdx = null;
+      if (idx > 0) {
+        const r = rows[idx - 1].getBoundingClientRect();
+        if (y < r.top + r.height / 2) toIdx = idx - 1;
+      }
+      if (toIdx === null && idx < rows.length - 1) {
+        const r = rows[idx + 1].getBoundingClientRect();
+        if (y > r.top + r.height / 2) toIdx = idx + 1;
+      }
+      if (toIdx !== null) {
+        setQueueList((ql) => {
+          const next = [...ql];
+          const [moved] = next.splice(idx, 1);
+          next.splice(toIdx, 0, moved);
+          return next;
+        });
+        reorderJam(roomId, d.id, toIdx);
+      }
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      dragRef.current = null;
+      setDragId(null);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
   }
 
   let content;
@@ -152,26 +204,48 @@ export default function JamGuest({ roomId }) {
           </div>
         )}
 
-        {mine.length > 0 && (
+        {queueList.length > 0 && (
           <div className="mb-3">
-            <p className="text-[11px] text-muted uppercase tracking-wide mb-1.5">Your additions, waiting for review</p>
-            <div className="flex flex-col gap-1.5">
-              {mine.map((entry) => (
-                <div key={entry.entryId} className="flex items-center gap-2.5 bg-surface2 rounded-xl px-3 py-2">
-                  <img src={entry.track.thumbnail} alt="" className="w-9 h-9 rounded-lg object-cover shrink-0" />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-[13px] text-white">{entry.track.title}</p>
-                    <p className="truncate text-[12px] text-muted">{entry.track.artist}</p>
-                  </div>
-                  <button
-                    onClick={() => handleRemoveMine(entry)}
-                    className="grid place-items-center w-9 h-9 text-muted active:text-white shrink-0"
-                    title="Remove"
+            <p className="text-[11px] text-muted uppercase tracking-wide mb-1.5">
+              Queue · {queueList.length} {queueList.length === 1 ? 'song' : 'songs'} · drag to reorder
+            </p>
+            <div ref={listElRef} className="flex flex-col gap-1.5 max-h-[38vh] overflow-y-auto no-scrollbar">
+              {queueList.map((entry) => {
+                const mine = entry.clientId === clientIdRef.current;
+                const dragging = dragId === entry.track.id;
+                return (
+                  <div
+                    key={entry.track.id}
+                    data-row
+                    className={`flex items-center gap-2 bg-surface2 rounded-xl px-2.5 py-2 transition-shadow ${
+                      dragging ? 'shadow-lg shadow-black/50 scale-[1.01] relative z-10' : ''
+                    }`}
                   >
-                    <TrashIcon size={16} />
-                  </button>
-                </div>
-              ))}
+                    <div
+                      onPointerDown={(e) => startDrag(e, entry.track.id)}
+                      className="grid place-items-center w-7 h-9 -ml-1 text-muted active:text-white cursor-grab touch-none select-none shrink-0"
+                      style={{ touchAction: 'none' }}
+                      aria-label="Drag to reorder"
+                    >
+                      <DragIcon size={16} />
+                    </div>
+                    <img src={entry.track.thumbnail} alt="" className="w-9 h-9 rounded-lg object-cover shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[13px] text-white">{entry.track.title}</p>
+                      <p className="truncate text-[12px] text-muted">{entry.track.artist}</p>
+                    </div>
+                    {mine && (
+                      <button
+                        onClick={() => handleRemove(entry)}
+                        className="grid place-items-center w-9 h-9 text-muted active:text-white shrink-0"
+                        title="Remove"
+                      >
+                        <TrashIcon size={16} />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
@@ -203,7 +277,7 @@ export default function JamGuest({ roomId }) {
           </div>
         )}
         {results.map((t) => {
-          const added = addedIds.has(t.id);
+          const added = queueList.some((e) => e.track.id === t.id);
           return (
             <div key={t.id} className="flex items-center gap-3 px-4 py-2.5">
               <img src={t.thumbnail} alt="" loading="lazy" className="w-12 h-12 rounded-lg object-cover bg-surface2 shrink-0" />
@@ -217,7 +291,7 @@ export default function JamGuest({ roomId }) {
               <button
                 onClick={() => handleAdd(t)}
                 disabled={added}
-                title={added ? 'Added' : 'Add to queue'}
+                title={added ? 'In queue' : 'Add to queue'}
                 className="grid place-items-center w-9 h-9 rounded-full text-muted active:scale-90 transition shrink-0"
               >
                 {added ? <CheckIcon size={20} className="text-accent" /> : <PlusIcon size={20} />}
