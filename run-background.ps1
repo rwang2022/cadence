@@ -108,7 +108,8 @@ if (-not $py) { Write-Error "No python.exe found under %LOCALAPPDATA%\Programs\P
 Log "python: $py"
 
 $before = (& $py -m pip show yt-dlp 2>$null | Select-String "^Version:\s*(.+)$").Matches.Groups[1].Value
-Log "Checking for a newer yt-dlp (current: $($before ?? 'not installed'))..."
+$beforeDisplay = if ($before) { $before } else { 'not installed' }
+Log "Checking for a newer yt-dlp (current: $beforeDisplay)..."
 & $py -m pip install --upgrade --quiet pip
 $pipOutput = & $py -m pip install --upgrade yt-dlp 2>&1 | Out-String
 Add-Content -Path $logFile -Value $pipOutput.TrimEnd()
