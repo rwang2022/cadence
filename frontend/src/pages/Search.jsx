@@ -1,18 +1,25 @@
 import { useEffect, useRef, useState } from 'react';
-import { search } from '../api.js';
+import { search, extractPlaylistRef } from '../api.js';
 import SongRow from '../components/SongRow.jsx';
-import { SearchIcon, MusicIcon } from '../components/Icons.jsx';
+import PlaylistView from '../components/PlaylistView.jsx';
+import { SearchIcon, MusicIcon, ChevronDown } from '../components/Icons.jsx';
+
+const PAGE_SIZE = 10;
 
 export default function Search() {
   const [q, setQ] = useState('');
   const [results, setResults] = useState([]);
+  const [shownCount, setShownCount] = useState(PAGE_SIZE);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const abortRef = useRef(null);
 
+  // A pasted playlist link/id gets its own view instead of a keyword search.
+  const playlistRef = extractPlaylistRef(q);
+
   // debounced search
   useEffect(() => {
-    if (!q.trim()) {
+    if (!q.trim() || playlistRef) {
       setResults([]);
       setError(null);
       return;
@@ -23,6 +30,7 @@ export default function Search() {
       abortRef.current = ctrl;
       setLoading(true);
       setError(null);
+      setShownCount(PAGE_SIZE);
       try {
         const r = await search(q, ctrl.signal);
         setResults(r);
@@ -33,7 +41,10 @@ export default function Search() {
       }
     }, 400);
     return () => clearTimeout(t);
-  }, [q]);
+  }, [q, playlistRef]);
+
+  const visible = results.slice(0, shownCount);
+  const hasMore = shownCount < results.length;
 
   return (
     <div className="h-full flex flex-col">
@@ -45,7 +56,7 @@ export default function Search() {
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Songs, artists..."
+            placeholder="Songs, artists, or a playlist link..."
             className="flex-1 bg-transparent outline-none text-[16px] placeholder:text-muted"
             autoCapitalize="none"
             autoCorrect="off"
@@ -57,22 +68,34 @@ export default function Search() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto no-scrollbar pb-2">
-        {loading && <Centered>Searching…</Centered>}
-        {error && <Centered>⚠️ {error}</Centered>}
-        {!loading && !error && q && results.length === 0 && (
-          <Centered>No results</Centered>
-        )}
-        {!q && (
-          <div className="flex flex-col items-center justify-center text-muted gap-3 pt-24 px-8 text-center">
-            <MusicIcon size={48} className="opacity-40" />
-            <p>Search YouTube for any song and stream it instantly.</p>
-          </div>
-        )}
-        {results.map((t) => (
-          <SongRow key={t.id} track={t} actions="search" />
-        ))}
-      </div>
+      {playlistRef ? (
+        <PlaylistView playlistRef={playlistRef} />
+      ) : (
+        <div className="flex-1 overflow-y-auto no-scrollbar pb-2">
+          {loading && <Centered>Searching…</Centered>}
+          {error && <Centered>⚠️ {error}</Centered>}
+          {!loading && !error && q && results.length === 0 && (
+            <Centered>No results</Centered>
+          )}
+          {!q && (
+            <div className="flex flex-col items-center justify-center text-muted gap-3 pt-24 px-8 text-center">
+              <MusicIcon size={48} className="opacity-40" />
+              <p>Search YouTube for any song, or paste a playlist link, and stream it instantly.</p>
+            </div>
+          )}
+          {visible.map((t) => (
+            <SongRow key={t.id} track={t} actions="search" />
+          ))}
+          {hasMore && (
+            <button
+              onClick={() => setShownCount((c) => c + PAGE_SIZE)}
+              className="flex items-center justify-center gap-1.5 w-full py-3.5 text-[14px] text-accent font-medium active:opacity-70"
+            >
+              Show more <ChevronDown size={16} />
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

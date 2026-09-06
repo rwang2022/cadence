@@ -2,9 +2,39 @@ import { useMemo, useState } from 'react';
 import { usePlayer } from '../context/PlayerContext.jsx';
 import SongRow from '../components/SongRow.jsx';
 import { fmtTime, fmtBytes } from '../lib/format.js';
-import { DownloadIcon, SearchIcon } from '../components/Icons.jsx';
+import { DownloadIcon, SearchIcon, VideoIcon } from '../components/Icons.jsx';
 
 export default function Library() {
+  const [tab, setTab] = useState('audio'); // 'audio' | 'video'
+
+  return (
+    <div className="h-full flex flex-col">
+      <div className="px-4 pt-2 pb-3 flex items-center justify-between">
+        <h1 className="text-3xl font-bold">Library</h1>
+        <div className="flex bg-surface2 rounded-full p-0.5">
+          <TabBtn on={tab === 'audio'} onClick={() => setTab('audio')}>Songs</TabBtn>
+          <TabBtn on={tab === 'video'} onClick={() => setTab('video')}>Videos</TabBtn>
+        </div>
+      </div>
+      {tab === 'audio' ? <AudioLibrary /> : <VideoLibrary />}
+    </div>
+  );
+}
+
+function TabBtn({ on, children, ...p }) {
+  return (
+    <button
+      {...p}
+      className={`px-3.5 py-1.5 rounded-full text-[13px] font-medium transition ${
+        on ? 'bg-accent text-white' : 'text-muted'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function AudioLibrary() {
   const { library, downloading, addToQueue } = usePlayer();
   const [filter, setFilter] = useState(null);
   const [query, setQuery] = useState('');
@@ -46,10 +76,9 @@ export default function Library() {
   const noMatches = !isEmpty && shown.length === 0;
 
   return (
-    <div className="h-full flex flex-col">
-      <div className="px-4 pt-2 pb-3">
-        <h1 className="text-3xl font-bold">Library</h1>
-        <p className="text-muted text-sm mt-1">
+    <>
+      <div className="px-4 pb-3 -mt-2">
+        <p className="text-muted text-sm">
           {library.length} downloaded {library.length === 1 ? 'song' : 'songs'}
           {totalBytes > 0 && <> · {fmtBytes(totalBytes)}</>} · plays offline
         </p>
@@ -130,7 +159,51 @@ export default function Library() {
           </>
         )}
       </div>
-    </div>
+    </>
+  );
+}
+
+function VideoLibrary() {
+  const { videoLibrary, downloadingVideo, openVideo } = usePlayer();
+  const pending = Object.values(downloadingVideo);
+  const totalBytes = videoLibrary.reduce((sum, t) => sum + (t.size || 0), 0);
+  const isEmpty = videoLibrary.length === 0 && pending.length === 0;
+
+  return (
+    <>
+      <div className="px-4 pb-3 -mt-2">
+        <p className="text-muted text-sm">
+          {videoLibrary.length} downloaded {videoLibrary.length === 1 ? 'video' : 'videos'}
+          {totalBytes > 0 && <> · {fmtBytes(totalBytes)}</>} · plays offline
+        </p>
+      </div>
+
+      <div className="flex-1 overflow-y-auto no-scrollbar pb-2">
+        {isEmpty ? (
+          <div className="flex flex-col items-center justify-center text-muted gap-3 pt-24 px-8 text-center">
+            <VideoIcon size={48} className="opacity-40" />
+            <p>No videos yet. Tap the download icon on any song, choose video, and it'll show up here for offline watching.</p>
+          </div>
+        ) : (
+          <>
+            {pending.map((t) => <DownloadingRow key={t.id} track={t} />)}
+            {videoLibrary.map((t) => (
+              <SongRow
+                key={t.id}
+                track={t}
+                actions="library-video"
+                onOpen={openVideo}
+                trailing={
+                  <span className="text-[12px] text-muted tabular-nums shrink-0">
+                    {fmtBytes(t.size)}
+                  </span>
+                }
+              />
+            ))}
+          </>
+        )}
+      </div>
+    </>
   );
 }
 

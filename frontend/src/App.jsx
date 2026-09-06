@@ -3,9 +3,11 @@ import { usePlayer } from './context/PlayerContext.jsx';
 import BottomNav from './components/BottomNav.jsx';
 import MiniPlayer from './components/MiniPlayer.jsx';
 import NowPlaying from './components/NowPlaying.jsx';
+import VideoPlayer from './components/VideoPlayer.jsx';
 import Search from './pages/Search.jsx';
 import Library from './pages/Library.jsx';
 import Queue from './pages/Queue.jsx';
+import Channel from './pages/Channel.jsx';
 
 export default function App() {
   const [tab, setTab] = useState('search');
@@ -28,6 +30,8 @@ export default function App() {
         <BottomNav tab={tab} setTab={setTab} queueCount={queue.length} />
       </div>
       <NowPlaying />
+      <VideoPlayer />
+      <Channel />
     </div>
   );
 }

@@ -1,13 +1,23 @@
 /**
  * Cadence — backend
  * Lightweight Express server that uses yt-dlp (+ ffmpeg) to search YouTube and
- * stream audio-only as MP3. For personal use only.
+ * stream audio-only as MP3, or download full video for offline viewing.
+ * For personal use only.
  *
  * Endpoints:
- *   GET /search?q=QUERY     -> top 10 results [{ id, title, artist, duration, thumbnail }]
- *   GET /info/:videoId      -> metadata for a single video
- *   GET /stream/:videoId    -> audio/mpeg stream (cached to disk, supports range/seek)
- *   GET /health             -> { ok: true }
+ *   GET  /search?q=QUERY        -> up to 30 results [{ id, title, artist, channelId, channelUrl, duration, thumbnail }]
+ *   GET  /info/:videoId         -> metadata for a single video, incl. chapters
+ *   GET  /stream/:videoId       -> audio/mpeg stream (cached to disk, supports range/seek)
+ *   GET  /health                -> { ok: true }
+ *
+ *   Video download (for offline viewing - separate from the audio stream above):
+ *   POST /video/:videoId/start  -> kicks off (or joins) a background download+mux -> { status }
+ *   GET  /video/:videoId/status -> { status: 'none'|'downloading'|'ready'|'error', error? }
+ *   GET  /video/:videoId/file   -> video/mp4 (cached to disk, supports range/seek) - 404 until ready
+ *
+ *   Playlists and channels (both list videos the same shape as /search):
+ *   GET  /playlist?url=         -> { title, results }
+ *   GET  /channel?url=          -> { title, results } (url = a channel/uploader URL from a track)
  *
  *   Jam (shared live queue via link) - rooms live in memory only, gone on
  *   restart. The room's queue IS the shared queue - no approval step, and
@@ -37,8 +47,13 @@ const PORT = process.env.PORT || 3001;
 const YT_DLP = process.env.YT_DLP_PATH || 'yt-dlp';
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 const CACHE_DIR = process.env.CACHE_DIR || path.join(os.tmpdir(), 'cadence-audio-cache');
+const VIDEO_CACHE_DIR = process.env.VIDEO_CACHE_DIR || path.join(os.tmpdir(), 'cadence-video-cache');
+// Cap on downloaded video resolution - 1080p is plenty for a phone screen and
+// keeps downloads from ballooning on a home connection + free tunnel.
+const MAX_VIDEO_HEIGHT = 1080;
 
 fs.mkdirSync(CACHE_DIR, { recursive: true });
+fs.mkdirSync(VIDEO_CACHE_DIR, { recursive: true });
 
 const app = express();
 // CORS enabled for the PWA frontend. Expose range headers so cross-origin audio
@@ -75,7 +90,9 @@ function runYtdlp(args) {
   });
 }
 
-// Normalise a yt-dlp JSON entry into the shape the frontend wants.
+// Normalise a yt-dlp JSON entry into the shape the frontend wants. channelUrl
+// is what "view artist's channel" links against - prefer the channel_* fields
+// (stable, ID-based) over uploader_* (can be a legacy name-based URL).
 function toTrack(e) {
   const id = e.id;
   return {
@@ -85,6 +102,8 @@ function toTrack(e) {
     duration: Math.round(e.duration || 0),
     thumbnail: thumbFor(id),
     url: `https://www.youtube.com/watch?v=${id}`,
+    channelId: e.channel_id || e.uploader_id || null,
+    channelUrl: e.channel_url || e.uploader_url || null,
   };
 }
 
@@ -109,9 +128,11 @@ app.get('/search', async (req, res) => {
   }
 
   try {
-    // --flat-playlist keeps search fast (no per-video extraction).
+    // --flat-playlist keeps search fast (no per-video extraction). Fetch a
+    // generous batch up front - the frontend shows the first page and reveals
+    // the rest on "show more" with no extra round-trip.
     const out = await runYtdlp([
-      `ytsearch10:${q}`,
+      `ytsearch30:${q}`,
       '--flat-playlist',
       '--dump-json',
       '--no-warnings',
@@ -163,7 +184,18 @@ app.get('/info/:videoId', async (req, res) => {
       '--no-warnings',
     ]);
     const e = JSON.parse(out);
-    res.json(toTrack(e));
+    // YouTube "chapters" (the labelled sections in the scrubber) - not present
+    // on most videos, an empty array when there aren't any.
+    const chapters = Array.isArray(e.chapters)
+      ? e.chapters
+          .filter((c) => c && Number.isFinite(c.start_time))
+          .map((c) => ({
+            start: Math.round(c.start_time),
+            end: Number.isFinite(c.end_time) ? Math.round(c.end_time) : null,
+            title: String(c.title || '').slice(0, 200) || 'Chapter',
+          }))
+      : [];
+    res.json({ ...toTrack(e), chapters });
   } catch (err) {
     console.error('info failed:', err.stderr || err.message);
     res.status(500).json({ error: 'Info lookup failed', detail: err.message });
@@ -240,6 +272,156 @@ app.get('/stream/:videoId', async (req, res) => {
   } catch (err) {
     console.error('stream failed:', err.message);
     if (!res.headersSent) res.status(500).json({ error: 'Stream failed', detail: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Video download (for offline viewing, e.g. on the subway) - a real download,
+// separate from the audio-only /stream above. This can take minutes for a
+// long video, which risks the free ngrok tunnel (or any proxy) timing out a
+// held-open request - so it's a background job instead: start it, poll
+// status, then fetch the file once ready.
+// ---------------------------------------------------------------------------
+const videoJobs = new Map(); // videoId -> { status: 'downloading'|'ready'|'error', error? }
+
+function videoFinalPath(videoId) {
+  return path.join(VIDEO_CACHE_DIR, `${videoId}.mp4`);
+}
+
+function startVideoDownload(videoId) {
+  const existing = videoJobs.get(videoId);
+  if (existing && existing.status === 'downloading') return existing;
+  if (fs.existsSync(videoFinalPath(videoId))) {
+    const job = { status: 'ready' };
+    videoJobs.set(videoId, job);
+    return job;
+  }
+
+  const job = { status: 'downloading' };
+  videoJobs.set(videoId, job);
+
+  const finalPath = videoFinalPath(videoId);
+  const tmpPath = path.join(VIDEO_CACHE_DIR, `${videoId}.part.mp4`);
+  const url = `https://www.youtube.com/watch?v=${videoId}`;
+  const args = [
+    '-f', `bestvideo[height<=${MAX_VIDEO_HEIGHT}]+bestaudio/best[height<=${MAX_VIDEO_HEIGHT}]`,
+    '--merge-output-format', 'mp4',
+    '--no-warnings', '--quiet',
+    '-o', tmpPath,
+    url,
+  ];
+  // yt-dlp does its own merging via ffmpeg when downloading to a file (unlike
+  // /stream's manual pipe-through-ffmpeg above) - point it at a custom ffmpeg
+  // location only when one was actually configured.
+  if (FFMPEG !== 'ffmpeg') args.unshift('--ffmpeg-location', path.dirname(FFMPEG));
+
+  const proc = spawn(YT_DLP, args, { windowsHide: true });
+  let errOut = '';
+  proc.stderr.on('data', (d) => { errOut += d; });
+  proc.on('error', (e) => {
+    videoJobs.set(videoId, { status: 'error', error: `yt-dlp spawn failed: ${e.message}` });
+  });
+  proc.on('close', (code) => {
+    if (code === 0 && fs.existsSync(tmpPath)) {
+      fs.renameSync(tmpPath, finalPath);
+      videoJobs.set(videoId, { status: 'ready' });
+    } else {
+      try { fs.existsSync(tmpPath) && fs.unlinkSync(tmpPath); } catch {}
+      videoJobs.set(videoId, { status: 'error', error: `Video download failed (code ${code}): ${errOut.slice(-500)}` });
+    }
+  });
+
+  return job;
+}
+
+app.post('/video/:videoId/start', (req, res) => {
+  const { videoId } = req.params;
+  if (!VIDEO_ID_RE.test(videoId)) return res.status(400).json({ error: 'Invalid video id' });
+  res.json(startVideoDownload(videoId));
+});
+
+app.get('/video/:videoId/status', (req, res) => {
+  const { videoId } = req.params;
+  if (!VIDEO_ID_RE.test(videoId)) return res.status(400).json({ error: 'Invalid video id' });
+  const job = videoJobs.get(videoId);
+  if (job) return res.json(job);
+  res.json({ status: fs.existsSync(videoFinalPath(videoId)) ? 'ready' : 'none' });
+});
+
+app.get('/video/:videoId/file', (req, res) => {
+  const { videoId } = req.params;
+  if (!VIDEO_ID_RE.test(videoId)) return res.status(400).json({ error: 'Invalid video id' });
+  const finalPath = videoFinalPath(videoId);
+  if (!fs.existsSync(finalPath)) return res.status(404).json({ error: 'Video not downloaded yet' });
+  res.sendFile(finalPath, {
+    headers: { 'Content-Type': 'video/mp4', 'Cache-Control': 'public, max-age=31536000' },
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Playlists and channels - both just list videos in the same shape /search
+// uses, so the frontend can render either with the same song-row UI.
+// ---------------------------------------------------------------------------
+const LISTING_MAX = 100; // don't let someone's 1000-video playlist hang the server
+
+async function listVideos(targetUrl) {
+  const out = await runYtdlp([
+    targetUrl,
+    '--flat-playlist',
+    '--dump-json',
+    '--no-warnings',
+    '--ignore-errors',
+    '--playlist-end', String(LISTING_MAX),
+  ]);
+  const entries = out
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+    .filter((e) => e && e.id && VIDEO_ID_RE.test(e.id));
+
+  const title = entries[0]?.playlist_title || entries[0]?.channel || entries[0]?.uploader || null;
+  return { title, results: entries.map(toTrack) };
+}
+
+app.get('/playlist', async (req, res) => {
+  let url = (req.query.url || '').toString().trim();
+  if (!url) return res.status(400).json({ error: 'Missing query param "url"' });
+  if (!/^https?:\/\//i.test(url)) url = `https://www.youtube.com/playlist?list=${encodeURIComponent(url)}`;
+
+  try {
+    res.json(await listVideos(url));
+  } catch (err) {
+    console.error('playlist listing failed:', err.stderr || err.message);
+    res.status(500).json({ error: "Couldn't load that playlist", detail: err.message });
+  }
+});
+
+app.get('/channel', async (req, res) => {
+  const url = (req.query.url || '').toString().trim();
+  if (!url || !/^https?:\/\//i.test(url)) {
+    return res.status(400).json({ error: 'Missing/invalid query param "url"' });
+  }
+  // Point at the uploads tab specifically, not whatever tab the bare URL
+  // defaults to.
+  const videosUrl = url.replace(/\/+$/, '') + '/videos';
+
+  try {
+    const listing = await listVideos(videosUrl);
+    // A channel's own "videos" flat-listing entries often don't repeat the
+    // uploader name per-video (unlike search results) - fall back to the
+    // channel's own name, which we already know here (yt-dlp's title for
+    // this listing is e.g. "Daft Punk - Videos" - strip that suffix).
+    const channelName = listing.title ? listing.title.replace(/\s*-\s*Videos$/i, '') : null;
+    if (channelName) {
+      listing.results = listing.results.map((t) =>
+        t.artist === 'Unknown artist' ? { ...t, artist: channelName } : t
+      );
+    }
+    res.json(listing);
+  } catch (err) {
+    console.error('channel listing failed:', err.stderr || err.message);
+    res.status(500).json({ error: "Couldn't load that channel", detail: err.message });
   }
 });
 

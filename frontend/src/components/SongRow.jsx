@@ -5,24 +5,30 @@ import {
   PlusIcon, CheckIcon, DownloadIcon, DownloadedIcon, TrashIcon, TagIcon,
 } from './Icons.jsx';
 import TagSheet from './TagSheet.jsx';
+import DownloadSheet from './DownloadSheet.jsx';
 
 /**
  * A single track row. `actions` chooses which buttons appear:
- *   'search'  -> add-to-queue + download
- *   'library' -> remove download
- *   'queue'   -> handled separately in Queue page
+ *   'search'       -> add-to-queue + download (audio or video, via a sheet)
+ *   'library'      -> remove (audio) download
+ *   'library-video'-> remove video download; tapping opens the video player
+ *   'queue'        -> handled separately in Queue page
+ * `onOpen` overrides what tapping the row does (defaults to playing it as
+ * audio); library-video rows pass openVideo instead.
  */
-export default function SongRow({ track, actions = 'search', trailing }) {
+export default function SongRow({ track, actions = 'search', trailing, onOpen }) {
   const {
     current, isPlaying, playTrack, preload,
-    addToQueue, queue, download, downloading, isDownloaded, removeDownload,
+    addToQueue, queue, downloading, isDownloaded, removeDownload,
+    isVideoDownloaded, downloadingVideo, removeVideoDownload, openChannel,
   } = usePlayer();
 
   const active = current?.id === track.id;
   const inQueue = queue.some((t) => t.id === track.id);
-  const downloaded = isDownloaded(track.id);
-  const isDownloading = !!downloading[track.id];
+  const downloaded = isDownloaded(track.id) || isVideoDownloaded(track.id);
+  const isDownloading = !!downloading[track.id] || !!downloadingVideo[track.id];
   const [tagOpen, setTagOpen] = useState(false);
+  const [downloadOpen, setDownloadOpen] = useState(false);
 
   return (
     <>
@@ -30,8 +36,8 @@ export default function SongRow({ track, actions = 'search', trailing }) {
       className={`group flex items-center gap-3 px-4 py-2.5 active:bg-surface2 transition-colors ${
         active ? 'bg-surface2' : ''
       }`}
-      onPointerDown={() => preload(track)} // preload audio on tap to avoid lag
-      onClick={() => playTrack(track)}
+      onPointerDown={() => actions !== 'library-video' && preload(track)} // preload audio on tap to avoid lag
+      onClick={() => (onOpen ? onOpen(track) : playTrack(track))}
       role="button"
     >
       <div className="relative shrink-0">
@@ -52,7 +58,16 @@ export default function SongRow({ track, actions = 'search', trailing }) {
         <p className={`truncate text-[15px] ${active ? 'text-accent' : 'text-white'}`}>
           {track.title}
         </p>
-        <p className="truncate text-[13px] text-muted">{track.artist}</p>
+        {track.channelUrl ? (
+          <p
+            onClick={(e) => { e.stopPropagation(); openChannel(track); }}
+            className="truncate text-[13px] text-muted active:text-white active:underline w-fit"
+          >
+            {track.artist}
+          </p>
+        ) : (
+          <p className="truncate text-[13px] text-muted">{track.artist}</p>
+        )}
       </div>
 
       <span className="text-[12px] text-muted tabular-nums shrink-0">
@@ -76,9 +91,8 @@ export default function SongRow({ track, actions = 'search', trailing }) {
             {inQueue ? <CheckIcon size={20} className="text-accent" /> : <PlusIcon size={20} />}
           </IconBtn>
           <IconBtn
-            onClick={(e) => { e.stopPropagation(); download(track); }}
+            onClick={(e) => { e.stopPropagation(); setDownloadOpen(true); }}
             title={downloaded ? 'Downloaded' : 'Download for offline'}
-            disabled={downloaded || isDownloading}
           >
             {downloaded ? (
               <DownloadedIcon size={20} className="text-accent" />
@@ -113,8 +127,20 @@ export default function SongRow({ track, actions = 'search', trailing }) {
           </IconBtn>
         </div>
       )}
+
+      {actions === 'library-video' && (
+        <div className="flex items-center gap-1 shrink-0">
+          <IconBtn
+            onClick={(e) => { e.stopPropagation(); removeVideoDownload(track.id); }}
+            title="Remove video"
+          >
+            <TrashIcon size={20} />
+          </IconBtn>
+        </div>
+      )}
     </div>
     {tagOpen && <TagSheet track={track} onClose={() => setTagOpen(false)} />}
+    {downloadOpen && <DownloadSheet track={track} onClose={() => setDownloadOpen(false)} />}
     </>
   );
 }

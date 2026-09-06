@@ -1,6 +1,7 @@
 // Tiny localStorage-backed persistence for library + queue metadata.
 const KEYS = {
   library: 'cadence.library',
+  videoLibrary: 'cadence.videoLibrary',
   queue: 'cadence.queue',
   jamRoom: 'cadence.jamRoom',
   jamGuestId: 'cadence.jamGuestId',
@@ -25,6 +26,8 @@ function write(key, value) {
 
 export const loadLibrary = () => read(KEYS.library, []);
 export const saveLibrary = (lib) => write(KEYS.library, lib);
+export const loadVideoLibrary = () => read(KEYS.videoLibrary, []);
+export const saveVideoLibrary = (lib) => write(KEYS.videoLibrary, lib);
 export const loadQueue = () => read(KEYS.queue, []);
 export const saveQueue = (q) => write(KEYS.queue, q);
 
@@ -47,3 +50,4 @@ export function getOrCreateGuestId() {
 }
 
 export const AUDIO_CACHE = 'cadence-audio';
+export const VIDEO_CACHE = 'cadence-video';

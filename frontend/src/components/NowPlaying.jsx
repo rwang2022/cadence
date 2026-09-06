@@ -1,8 +1,11 @@
+import { useEffect, useState } from 'react';
 import { usePlayer } from '../context/PlayerContext.jsx';
+import { info } from '../api.js';
 import Scrubber from './Scrubber.jsx';
+import ChapterList from './ChapterList.jsx';
 import {
   PlayIcon, PauseIcon, ChevronDown, Back15, Fwd15, VolumeIcon,
-  DownloadIcon, DownloadedIcon,
+  DownloadIcon, DownloadedIcon, ChannelIcon,
 } from './Icons.jsx';
 
 // Full-screen player overlay.
@@ -11,8 +14,19 @@ export default function NowPlaying() {
     current, isPlaying, currentTime, duration, volume, buffering,
     togglePlay, seek, skip, setVolume, playNext, playPrev,
     setShowNowPlaying, showNowPlaying,
-    download, isDownloaded, downloading,
+    download, isDownloaded, downloading, openChannel,
   } = usePlayer();
+
+  const [chapters, setChapters] = useState([]);
+  useEffect(() => {
+    if (!current) { setChapters([]); return; }
+    let cancelled = false;
+    setChapters([]);
+    info(current.id).then((d) => {
+      if (!cancelled) setChapters(d.chapters || []);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [current?.id]);
 
   if (!current) return null;
   const downloaded = isDownloaded(current.id);
@@ -58,13 +72,29 @@ export default function NowPlaying() {
       {/* meta */}
       <div className="px-8">
         <h1 className="text-2xl font-bold truncate">{current.title}</h1>
-        <p className="text-muted text-base truncate mt-1">{current.artist}</p>
+        {current.channelUrl ? (
+          <button
+            onClick={() => { setShowNowPlaying(false); openChannel(current); }}
+            className="flex items-center gap-1.5 mt-1 active:opacity-70"
+          >
+            <ChannelIcon size={14} className="text-muted shrink-0" />
+            <span className="text-muted text-base truncate">{current.artist}</span>
+          </button>
+        ) : (
+          <p className="text-muted text-base truncate mt-1">{current.artist}</p>
+        )}
       </div>
 
       {/* scrubber */}
       <div className="px-8 mt-5">
         <Scrubber currentTime={currentTime} duration={duration} onSeek={seek} />
       </div>
+
+      {chapters.length > 0 && (
+        <div className="px-8 mt-3">
+          <ChapterList chapters={chapters} currentTime={currentTime} onSeek={seek} />
+        </div>
+      )}
 
       {/* transport */}
       <div className="flex items-center justify-center gap-6 px-8 mt-4">

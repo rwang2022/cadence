@@ -1,13 +1,19 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { streamUrl, API_HEADERS, addToJam, reorderJam, removeJamSong } from '../api.js';
+import {
+  streamUrl, API_HEADERS, addToJam, reorderJam, removeJamSong,
+  videoFileUrl, startVideoDownload, getVideoStatus,
+} from '../api.js';
 import {
   loadLibrary,
   saveLibrary,
+  loadVideoLibrary,
+  saveVideoLibrary,
   loadQueue,
   saveQueue,
   loadJamRoom,
   saveJamRoom,
   AUDIO_CACHE,
+  VIDEO_CACHE,
 } from '../lib/storage.js';
 
 const PlayerCtx = createContext(null);
@@ -16,6 +22,10 @@ export const usePlayer = () => useContext(PlayerCtx);
 // How many songs to download at once. The free ngrok tunnel + on-demand
 // yt-dlp/ffmpeg conversion can't handle a big parallel burst, so we cap it.
 const MAX_CONCURRENT_DOWNLOADS = 2;
+// Videos are a much bigger download (a whole video track, not just audio) -
+// one at a time so it doesn't compete with everything else for bandwidth.
+const MAX_CONCURRENT_VIDEO_DOWNLOADS = 1;
+const VIDEO_STATUS_POLL_MS = 2000;
 
 export function PlayerProvider({ children }) {
   const audioRef = useRef(null);
@@ -44,6 +54,13 @@ export function PlayerProvider({ children }) {
   const [library, setLibrary] = useState(() => loadLibrary());
   const [downloading, setDownloading] = useState({}); // id -> true while caching
   const [showNowPlaying, setShowNowPlaying] = useState(false);
+
+  // ---- video downloads (offline viewing) + channel/video-player overlays ---
+  const [videoLibrary, setVideoLibrary] = useState(() => loadVideoLibrary());
+  const [downloadingVideo, setDownloadingVideo] = useState({}); // id -> track while downloading
+  const [videoTrack, setVideoTrack] = useState(null); // track currently open in the video player
+  const [channelTrack, setChannelTrack] = useState(null); // track whose channel is currently open
+  useEffect(() => saveVideoLibrary(videoLibrary), [videoLibrary]);
 
   // Active Jam room, if any - lives here (not just the Queue page) so that
   // adding a song from Search/Library also syncs to the shared room.
@@ -302,6 +319,85 @@ export function PlayerProvider({ children }) {
     pumpDownloads();
   }, [isDownloaded, pumpDownloads]);
 
+  // ---- video downloads (for offline viewing) --------------------------------
+  const isVideoDownloaded = useCallback(
+    (id) => videoLibrary.some((t) => t.id === id),
+    [videoLibrary]
+  );
+
+  const dlVideoPendingRef = useRef([]);
+  const dlVideoActiveRef = useRef(0);
+  const dlVideoSeenRef = useRef(new Set());
+
+  const runVideoDownload = useCallback(async (track) => {
+    try {
+      await startVideoDownload(track.id);
+      // Poll until the backend's yt-dlp+ffmpeg job finishes - this can take
+      // a while (a real video download, not just audio), so no fixed timeout.
+      let status = 'downloading';
+      while (status === 'downloading') {
+        await new Promise((r) => setTimeout(r, VIDEO_STATUS_POLL_MS));
+        const s = await getVideoStatus(track.id);
+        status = s.status;
+        if (status === 'error') throw new Error(s.error || 'Video conversion failed');
+      }
+      // Ready on the backend - now fetch + cache the actual file for offline use.
+      const cache = await caches.open(VIDEO_CACHE);
+      const res = await fetch(videoFileUrl(track.id), { headers: API_HEADERS });
+      if (!res.ok) throw new Error(`server returned HTTP ${res.status}`);
+      const cl = Number(res.headers.get('content-length'));
+      const size = cl > 0 ? cl : (await res.clone().blob()).size;
+      await cache.put(videoFileUrl(track.id), res);
+      setVideoLibrary((lib) => (lib.find((t) => t.id === track.id) ? lib : [{ ...track, downloadedAt: Date.now(), size }, ...lib]));
+    } catch (e) {
+      console.error('video download failed:', track.id, e);
+      const reason = e?.name === 'TypeError'
+        ? 'could not reach the backend (tunnel down or connection dropped)'
+        : e?.message || 'unknown error';
+      alert(`Couldn't download "${track.title}" as video:\n${reason}`);
+    } finally {
+      dlVideoSeenRef.current.delete(track.id);
+      setDownloadingVideo((d) => { const n = { ...d }; delete n[track.id]; return n; });
+    }
+  }, []);
+
+  const pumpVideoDownloads = useCallback(() => {
+    while (dlVideoActiveRef.current < MAX_CONCURRENT_VIDEO_DOWNLOADS && dlVideoPendingRef.current.length) {
+      const track = dlVideoPendingRef.current.shift();
+      dlVideoActiveRef.current += 1;
+      runVideoDownload(track).finally(() => {
+        dlVideoActiveRef.current -= 1;
+        pumpVideoDownloads();
+      });
+    }
+  }, [runVideoDownload]);
+
+  const downloadVideo = useCallback((track) => {
+    if (isVideoDownloaded(track.id) || dlVideoSeenRef.current.has(track.id)) return;
+    dlVideoSeenRef.current.add(track.id);
+    setDownloadingVideo((d) => ({ ...d, [track.id]: track }));
+    dlVideoPendingRef.current.push(track);
+    pumpVideoDownloads();
+  }, [isVideoDownloaded, pumpVideoDownloads]);
+
+  const removeVideoDownload = useCallback(async (id) => {
+    try {
+      const cache = await caches.open(VIDEO_CACHE);
+      await cache.delete(videoFileUrl(id));
+    } catch (e) {
+      console.warn('video cache delete failed', e);
+    }
+    setVideoLibrary((lib) => lib.filter((t) => t.id !== id));
+  }, []);
+
+  // ---- channel + video-player overlays --------------------------------------
+  // Any page can call these (tapping an artist name, or a "watch" action) -
+  // lives here rather than per-page state so it works everywhere consistently.
+  const openChannel = useCallback((track) => setChannelTrack(track), []);
+  const closeChannel = useCallback(() => setChannelTrack(null), []);
+  const openVideo = useCallback((track) => setVideoTrack(track), []);
+  const closeVideo = useCallback(() => setVideoTrack(null), []);
+
   // Backfill byte sizes for songs downloaded before sizes were tracked, by
   // reading them out of the audio cache. Runs only while something is missing.
   useEffect(() => {
@@ -403,6 +499,8 @@ export function PlayerProvider({ children }) {
       preload, playTrack, togglePlay, playNext, playPrev, seek, skip, setVolume,
       addToQueue, removeFromQueue, reorderQueue, clearQueue,
       download, removeDownload, isDownloaded, toggleTag,
+      videoLibrary, downloadingVideo, downloadVideo, removeVideoDownload, isVideoDownloaded,
+      videoTrack, openVideo, closeVideo, channelTrack, openChannel, closeChannel,
     }),
     [
       current, isPlaying, currentTime, duration, volume, buffering,
@@ -411,6 +509,8 @@ export function PlayerProvider({ children }) {
       preload, playTrack, togglePlay, playNext, playPrev, seek, skip, setVolume,
       addToQueue, removeFromQueue, reorderQueue, clearQueue,
       download, removeDownload, isDownloaded,
+      videoLibrary, downloadingVideo, downloadVideo, removeVideoDownload, isVideoDownloaded,
+      videoTrack, openVideo, closeVideo, channelTrack, openChannel, closeChannel,
     ]
   );
 

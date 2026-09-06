@@ -20,7 +20,55 @@ export async function search(query, signal) {
 export async function info(id, signal) {
   const res = await fetch(`${API_BASE}/info/${id}`, { signal, headers: API_HEADERS });
   if (!res.ok) throw new Error(`Info failed (${res.status})`);
-  return res.json();
+  return res.json(); // includes chapters: [{ start, end, title }]
+}
+
+// ---- video (offline download), playlists, channels -------------------------
+
+export const videoFileUrl = (id) => `${API_BASE}/video/${id}/file`;
+
+export async function startVideoDownload(id) {
+  const res = await fetch(`${API_BASE}/video/${id}/start`, { method: 'POST', headers: API_HEADERS });
+  if (!res.ok) throw new Error(`Couldn't start video download (${res.status})`);
+  return res.json(); // { status }
+}
+
+export async function getVideoStatus(id, signal) {
+  const res = await fetch(`${API_BASE}/video/${id}/status`, { signal, headers: API_HEADERS });
+  if (!res.ok) throw new Error(`Video status failed (${res.status})`);
+  return res.json(); // { status: 'none'|'downloading'|'ready'|'error', error? }
+}
+
+// url can be a full playlist URL or a bare playlist id.
+export async function getPlaylist(url, signal) {
+  const res = await fetch(`${API_BASE}/playlist?url=${encodeURIComponent(url)}`, { signal, headers: API_HEADERS });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Playlist lookup failed (${res.status})`);
+  }
+  return res.json(); // { title, results }
+}
+
+// url must be a channel/uploader URL (a track's channelUrl field).
+export async function getChannel(url, signal) {
+  const res = await fetch(`${API_BASE}/channel?url=${encodeURIComponent(url)}`, { signal, headers: API_HEADERS });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Channel lookup failed (${res.status})`);
+  }
+  return res.json(); // { title, results }
+}
+
+// Recognizes a pasted playlist URL/id so Search can offer "view playlist"
+// instead of a normal keyword search. Matches a `list=` param or a bare
+// playlist-shaped id (YouTube playlist ids are typically 13-40 chars,
+// starting PL/UU/OL/RD/LL/FL).
+export function extractPlaylistRef(input) {
+  const s = input.trim();
+  const m = s.match(/[?&]list=([A-Za-z0-9_-]+)/);
+  if (m) return m[1];
+  if (/^(PL|UU|OL|RD|LL|FL)[A-Za-z0-9_-]{10,}$/.test(s)) return s;
+  return null;
 }
 
 // ---- Jam: shared queue via link -------------------------------------------

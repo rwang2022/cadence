@@ -72,3 +72,13 @@ export const MusicIcon = (p) => (
 export const TagIcon = (p) => (
   <S {...p}><path d="M3 11.5V4a1 1 0 0 1 1-1h7.5a1 1 0 0 1 .7.3l8 8a1 1 0 0 1 0 1.4l-7.5 7.5a1 1 0 0 1-1.4 0l-8-8a1 1 0 0 1-.3-.7Z" /><circle cx="7.5" cy="7.5" r="1.3" fill="currentColor" /></S>
 );
+export const VideoIcon = (p) => (
+  <S {...p}><rect x="3" y="6" width="13" height="12" rx="2" /><path d="m16 10 5-3v10l-5-3Z" /></S>
+);
+export const ChannelIcon = (p) => (
+  <S {...p}><circle cx="12" cy="8" r="3.2" /><path d="M5 20c0-3.5 3-6 7-6s7 2.5 7 6" /></S>
+);
+export const PlaylistIcon = (p) => (
+  <S {...p}><path d="M3 6h13" /><path d="M3 12h13" /><path d="M3 18h9" /><path d="m17 15 5 3-5 3v-6Z" fill="currentColor" stroke="none" /></S>
+);
+export const ChevronRight = (p) => (<S {...p}><path d="m9 6 6 6-6 6" /></S>);
