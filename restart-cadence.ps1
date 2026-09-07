@@ -45,9 +45,15 @@ function Stop-OrphanedProcess([string]$ProcessName, [string]$Pattern, [int]$Time
     }
   }
 }
-# Scope the match to *this* node.exe running *this* server.js, not just any
-# process anywhere whose command line happens to contain "server.js".
-Stop-OrphanedProcess -ProcessName "node.exe"  -Pattern ([regex]::Escape($NodeExe) + '.*server\.js')
+# Scope the match to *this* node.exe running *this* server.js as its own
+# argument - not just any process whose command line happens to CONTAIN the
+# substring "server.js" anywhere, which previously also matched (and killed)
+# an unrelated project's "start-server.js" dev server on the same machine.
+# The (?<=[\s"]) / (?=\s|$) boundaries require "server.js" to be a standalone
+# token, not part of a longer filename like "start-server.js".
+Stop-OrphanedProcess -ProcessName "node.exe" -Pattern (
+  [regex]::Escape($NodeExe) + '.*(?<=[\s"])server\.js(?=\s|$)'
+)
 Stop-OrphanedProcess -ProcessName "ngrok.exe" -Pattern ([regex]::Escape($Domain))
 
 Start-Sleep -Seconds 1
