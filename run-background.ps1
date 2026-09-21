@@ -23,7 +23,7 @@
 #      first time, updating them on every re-run) that all restart
 #      themselves if they crash:
 #        - "Cadence Backend" - node server.js
-#        - "Cadence Tunnel"  - the ngrok tunnel
+#        - "Cadence Tunnel"  - the Cloudflare Tunnel (cloudflared)
 #        - "Cadence Maintenance" - re-runs THIS SAME SCRIPT weekly, so
 #          yt-dlp stays updated and nothing here ever needs a human to
 #          remember to run it again.
@@ -39,13 +39,23 @@
 # refreshed weekly. Every later manual run just repeats steps 1-4 (all
 # idempotent/harmless to redo).
 #
-# Prereqs (install first): node, ngrok - both on PATH, with
-# `ngrok config add-authtoken <token>` already run once.
+# Tunnel is Cloudflare Tunnel, not ngrok - ngrok's free plan bandwidth cap is
+# small enough that video downloads exhaust it in a single session. Cloudflare
+# Tunnel is free with no bandwidth cap, using a subdomain of a domain already
+# on Cloudflare DNS (rwang.dev) for a stable hostname instead of ngrok's
+# random-but-free one.
+#
+# Prereqs (install first): node, cloudflared - both on PATH (or cloudflared
+# at its default winget install path) - with `cloudflared tunnel login` and
+# `cloudflared tunnel create cadence` already run once, and a config.yml at
+# %USERPROFILE%\.cloudflared\config.yml routing the chosen hostname to
+# http://localhost:<Port>.
 # =====================================================================
 
 param(
   [string]$RepoPath     = $PSScriptRoot,
-  [string]$Domain       = "say-sixfold-scrap.ngrok-free.dev",
+  [string]$Domain       = "cadence.rwang.dev",
+  [string]$TunnelName   = "cadence",
   [int]   $Port         = 3999,
   [int]   $IntervalDays = 7,       # how often "Cadence Maintenance" re-runs this script
   [string]$MaintTime    = "04:00"  # local time of day for that re-run (24h, "HH:mm")
@@ -68,16 +78,20 @@ $admin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
 if (-not $admin) { Write-Error "Please run this in an *Administrator* PowerShell window."; exit 1 }
 
 # --- resolve tools -----------------------------------------------------
-$nodeExe  = (Get-Command node  -ErrorAction SilentlyContinue).Source
-$ngrokExe = (Get-Command ngrok -ErrorAction SilentlyContinue).Source
-if (-not $nodeExe)  { Write-Error "node not found on PATH. Install Node.js first." ; exit 1 }
-if (-not $ngrokExe) { Write-Error "ngrok not found on PATH. Install ngrok first." ; exit 1 }
+$nodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source
+$cloudflaredExe = (Get-Command cloudflared -ErrorAction SilentlyContinue).Source
+if (-not $cloudflaredExe) {
+  $fallback = "C:\Program Files (x86)\cloudflared\cloudflared.exe"
+  if (Test-Path $fallback) { $cloudflaredExe = $fallback }
+}
+if (-not $nodeExe)       { Write-Error "node not found on PATH. Install Node.js first." ; exit 1 }
+if (-not $cloudflaredExe) { Write-Error "cloudflared not found on PATH or at the default winget install path. Install it first (winget install --id Cloudflare.cloudflared)." ; exit 1 }
 $backendDir = Join-Path $RepoPath "backend"
 if (-not (Test-Path (Join-Path $backendDir "server.js"))) { Write-Error "Can't find backend\server.js under $RepoPath"; exit 1 }
 
-Log "node : $nodeExe"
-Log "ngrok: $ngrokExe"
-Log "repo : $RepoPath"
+Log "node       : $nodeExe"
+Log "cloudflared: $cloudflaredExe"
+Log "repo       : $RepoPath"
 
 # --- backend dependencies: install if missing (e.g. after a fresh clone) ---
 if (-not (Test-Path (Join-Path $backendDir "node_modules"))) {
@@ -167,8 +181,9 @@ $startupTrigger.Delay = "PT30S"   # wait 30s after boot so the network is up
 
 $backendAction = New-ScheduledTaskAction -Execute "cmd.exe" `
   -Argument "/c set PORT=$Port&& `"$nodeExe`" server.js" -WorkingDirectory $backendDir
-$tunnelAction = New-ScheduledTaskAction -Execute $ngrokExe `
-  -Argument "http --url=https://$Domain $Port"
+$cloudflaredConfig = Join-Path $env:USERPROFILE ".cloudflared\config.yml"
+$tunnelAction = New-ScheduledTaskAction -Execute $cloudflaredExe `
+  -Argument "tunnel --config `"$cloudflaredConfig`" run $TunnelName"
 
 Register-ScheduledTask -TaskName "Cadence Backend" -Action $backendAction -Trigger $startupTrigger -Settings $startupSettings -Principal $principal -Force | Out-Null
 Register-ScheduledTask -TaskName "Cadence Tunnel"  -Action $tunnelAction  -Trigger $startupTrigger -Settings $startupSettings -Principal $principal -Force | Out-Null
@@ -189,7 +204,7 @@ Register-ScheduledTask -TaskName "Cadence Maintenance" -Action $maintAction -Tri
 Log "  'Cadence Maintenance' registered (re-runs this script every $IntervalDays day(s) at $MaintTime)."
 
 # --- 4) start backend + tunnel now, then sanity-check -----------------
-& (Join-Path $RepoPath "restart-cadence.ps1") -NodeExe $nodeExe -Domain $Domain -Port $Port -LogFile $logFile
+& (Join-Path $RepoPath "restart-cadence.ps1") -NodeExe $nodeExe -CloudflaredExe $cloudflaredExe -Domain $Domain -TunnelName $TunnelName -Port $Port -LogFile $logFile
 
 # --- 5) register the fast-polling auto-deploy Scheduled Task ---------
 # Checks every 2 minutes for a new commit on origin/main and, if found,
@@ -209,7 +224,7 @@ $deployTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
   -RepetitionInterval (New-TimeSpan -Minutes 2) -RepetitionDuration (New-TimeSpan -Days 3650)
 $deployScriptPath = Join-Path $RepoPath "auto-deploy.ps1"
 $deployAction = New-ScheduledTaskAction -Execute "powershell.exe" `
-  -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$deployScriptPath`" -RepoPath `"$RepoPath`" -Domain `"$Domain`" -Port $Port" `
+  -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$deployScriptPath`" -RepoPath `"$RepoPath`" -Domain `"$Domain`" -TunnelName `"$TunnelName`" -Port $Port" `
   -WorkingDirectory $RepoPath
 
 Register-ScheduledTask -TaskName "Cadence AutoDeploy" -Action $deployAction -Trigger $deployTrigger -Settings $deploySettings -Principal $deployPrincipal -Force | Out-Null

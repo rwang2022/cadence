@@ -14,9 +14,10 @@
 # admin run, or waits for the weekly Maintenance run.)
 # =====================================================================
 param(
-  [string]$RepoPath = $PSScriptRoot,
-  [string]$Domain   = "say-sixfold-scrap.ngrok-free.dev",
-  [int]   $Port     = 3999
+  [string]$RepoPath   = $PSScriptRoot,
+  [string]$Domain     = "cadence.rwang.dev",
+  [string]$TunnelName = "cadence",
+  [int]   $Port       = 3999
 )
 
 $ErrorActionPreference = "Stop"
@@ -56,5 +57,5 @@ try {
 }
 
 $nodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source
-& (Join-Path $RepoPath "restart-cadence.ps1") -NodeExe $nodeExe -Domain $Domain -Port $Port -LogFile $logFile
+& (Join-Path $RepoPath "restart-cadence.ps1") -NodeExe $nodeExe -Domain $Domain -TunnelName $TunnelName -Port $Port -LogFile $logFile
 Log "Deploy done."
