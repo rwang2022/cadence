@@ -57,19 +57,25 @@ async function handleMedia(request, cacheName, defaultType) {
 }
 
 // Turn a cached full-body response into a 206 Partial Content response when the
-// client asks for a byte range (required for <audio>/<video> seeking). Uses
-// Blob.slice() rather than reading the whole file into an ArrayBuffer - slicing
-// a Blob doesn't copy/read the underlying bytes into memory, which matters once
-// cached files are hundreds of MB (a downloaded video) rather than a few MB
-// (audio), and a seek can fire many range requests in quick succession.
+// client asks for a byte range (required for <audio>/<video> seeking).
+//
+// This reads the cached body as a STREAM and only passes through the bytes in
+// [start, end] - it never materializes the whole file at once. That used to be
+// done with response.clone().blob() + Blob.slice(), which is fine for a few-MB
+// audio file, but breaks down once cached files reach hundreds of MB to 1GB+ (a
+// downloaded video): a video element fires many range requests while
+// playing/seeking (Safari in particular probes with small ranges up front),
+// and .blob()'ing the ENTIRE cached response from scratch on every single one
+// means repeatedly reading the whole file off disk before returning even a
+// few bytes - slow enough to look like the video is stuck loading forever, and
+// on a phone's tighter memory budget, risky enough to crash the tab outright.
 async function buildRangeResponse(request, response, defaultType) {
   const range = request.headers.get('range');
   if (!range) return response;
 
-  const blob = await response.clone().blob();
-  const size = blob.size;
+  const size = Number(response.headers.get('content-length'));
   const m = /bytes=(\d+)-(\d*)/.exec(range);
-  if (!m) return response;
+  if (!m || !size) return response;
 
   const start = parseInt(m[1], 10);
   const end = m[2] ? Math.min(parseInt(m[2], 10), size - 1) : size - 1;
@@ -80,15 +86,46 @@ async function buildRangeResponse(request, response, defaultType) {
     });
   }
 
-  const chunk = blob.slice(start, end + 1);
-  return new Response(chunk, {
+  const length = end - start + 1;
+  const reader = response.body.getReader();
+  let position = 0;    // bytes of the source stream consumed so far
+  let emitted = 0;      // bytes handed to the client so far
+
+  const stream = new ReadableStream({
+    async pull(controller) {
+      while (emitted < length) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunkStart = position;
+        const chunkEnd = position + value.length; // exclusive
+        position = chunkEnd;
+        if (chunkEnd <= start) continue; // entirely before the requested range - skip
+        const from = Math.max(0, start - chunkStart);
+        const to = Math.min(value.length, end + 1 - chunkStart);
+        if (to > from) {
+          const piece = value.subarray(from, to);
+          controller.enqueue(piece);
+          emitted += piece.length;
+        }
+        if (chunkEnd > end) break; // read past the end of the range - done
+        return; // yield back to the stream consumer, pull() is called again
+      }
+      controller.close();
+      reader.cancel().catch(() => {});
+    },
+    cancel() {
+      reader.cancel().catch(() => {});
+    },
+  });
+
+  return new Response(stream, {
     status: 206,
     statusText: 'Partial Content',
     headers: {
       'Content-Type': response.headers.get('Content-Type') || defaultType,
       'Content-Range': `bytes ${start}-${end}/${size}`,
       'Accept-Ranges': 'bytes',
-      'Content-Length': String(chunk.size),
+      'Content-Length': String(length),
     },
   });
 }
