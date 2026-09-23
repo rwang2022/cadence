@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { usePlayer } from '../context/PlayerContext.jsx';
 import { videoFileUrl, info } from '../api.js';
+import { VIDEO_CACHE } from '../lib/storage.js';
 import ChapterList from './ChapterList.jsx';
 import {
   ChevronDown, DownloadIcon, DownloadedIcon, ChannelIcon,
@@ -18,6 +19,7 @@ export default function VideoPlayer() {
   const videoRef = useRef(null);
   const [chapters, setChapters] = useState([]);
   const [currentTime, setCurrentTime] = useState(0);
+  const [videoSrc, setVideoSrc] = useState(null);
 
   useEffect(() => {
     if (!videoTrack) return;
@@ -27,6 +29,44 @@ export default function VideoPlayer() {
       if (!cancelled) setChapters(d.chapters || []);
     }).catch(() => {});
     return () => { cancelled = true; };
+  }, [videoTrack?.id]);
+
+  // Downloaded videos are only ever opened after they're fully cached, so
+  // grab the blob straight from Cache Storage here on the main page and hand
+  // the <video> element a plain Blob URL, rather than pointing it at the
+  // network URL and letting the Service Worker intercept + range-slice it.
+  // A Service Worker has a much tighter memory ceiling than the page on iOS
+  // Safari, and even a "materialize once" ~1GB Blob there is enough to get it
+  // killed mid-request - which shows up as the video failing to load at all.
+  // The main page has far more headroom, and a Blob URL lets the browser's
+  // own media pipeline handle seeking natively with no Range/SW involved.
+  useEffect(() => {
+    if (!videoTrack) { setVideoSrc(null); return; }
+    let objectUrl = null;
+    let cancelled = false;
+    setVideoSrc(null);
+    (async () => {
+      const networkUrl = videoFileUrl(videoTrack.id);
+      try {
+        const cache = await caches.open(VIDEO_CACHE);
+        const cached = await cache.match(networkUrl);
+        if (cancelled) return;
+        if (cached) {
+          const blob = await cached.blob();
+          if (cancelled) return;
+          objectUrl = URL.createObjectURL(blob);
+          setVideoSrc(objectUrl);
+          return;
+        }
+      } catch (e) {
+        console.error('reading cached video failed, falling back to network:', videoTrack.id, e);
+      }
+      if (!cancelled) setVideoSrc(networkUrl);
+    })();
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
   }, [videoTrack?.id]);
 
   if (!videoTrack) return null;
@@ -56,18 +96,25 @@ export default function VideoPlayer() {
         </button>
       </div>
 
-      <div className="bg-black grid place-items-center">
-        <video
-          ref={videoRef}
-          key={videoTrack.id}
-          src={videoFileUrl(videoTrack.id)}
-          poster={videoTrack.thumbnail}
-          controls
-          playsInline
-          autoPlay
-          onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-          className="w-full max-h-[45vh] sm:max-h-[280px] bg-black"
-        />
+      <div className="bg-black grid place-items-center relative w-full max-h-[45vh] sm:max-h-[280px] min-h-[160px]">
+        {videoSrc ? (
+          <video
+            ref={videoRef}
+            key={videoTrack.id}
+            src={videoSrc}
+            poster={videoTrack.thumbnail}
+            controls
+            playsInline
+            autoPlay
+            onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+            className="w-full max-h-[45vh] sm:max-h-[280px] bg-black"
+          />
+        ) : (
+          <>
+            <img src={videoTrack.thumbnail} alt="" className="w-full max-h-[45vh] sm:max-h-[280px] object-cover opacity-40" />
+            <span className="absolute w-8 h-8 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+          </>
+        )}
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto no-scrollbar px-4 pt-4">
